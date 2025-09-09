@@ -33,34 +33,6 @@ async def convert_pdf_to_image(pdf_file: UploadFile):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"PDFの画像化に失敗しました: {e}")
 
-def align_images(img1: Image.Image, img2: Image.Image) -> Image.Image:
-    """OpenCVを使って2つの画像の位置を合わせる"""
-    # PIL画像をOpenCV画像(numpy.ndarray)に変換
-    img1_cv = np.array(img1)
-    img2_cv = np.array(img2)
-
-    # グレースケールに変換
-    img1_gray = cv2.cvtColor(img1_cv, cv2.COLOR_RGB2GRAY)
-    img2_gray = cv2.cvtColor(img2_cv, cv2.COLOR_RGB2GRAY)
-
-    # 高周波ノイズを減らすために浮動小数点数に変換
-    img1_float = np.float32(img1_gray)
-    img2_float = np.float32(img2_gray)
-
-    # 位相相関法でズレを検出
-    shift, _ = cv2.phaseCorrelate(img1_float, img2_float)
-    dx, dy = shift
-
-    # アフィン変換行列を作成（検出されたズレと逆方向に補正する）
-    rows, cols = img1_gray.shape
-    M = np.float32([[1, 0, -dx], [0, 1, -dy]])
-
-    # 2枚目の画像にアフィン変換を適用して位置を補正
-    aligned_img2_cv = cv2.warpAffine(img2_cv, M, (cols, rows))
-
-    # OpenCV画像をPIL画像に変換して返す
-    return Image.fromarray(aligned_img2_cv)
-
 def color_difference(p1, p2):
     """2つのピクセルの色差を計算する"""
     return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) + abs(p1[2] - p2[2])
@@ -80,16 +52,47 @@ async def create_diff_image(
     if img1.size != img2.size:
         raise HTTPException(status_code=400, detail="PDFのページサイズまたは向きが異なります。")
 
-    # ★★★ 位置合わせ処理を追加 ★★★
-    aligned_img2 = align_images(img1, img2)
+    # --- 位置合わせとマスク作成 --- 
+    img1_cv = np.array(img1)
+    img2_cv = np.array(img2)
+    img1_gray = cv2.cvtColor(img1_cv, cv2.COLOR_RGB2GRAY)
+    img2_gray = cv2.cvtColor(img2_cv, cv2.COLOR_RGB2GRAY)
+    
+    shift, _ = cv2.phaseCorrelate(np.float32(img1_gray), np.float32(img2_gray))
+    dx, dy = shift
+    shift_x, shift_y = -dx, -dy # 補正量
+
+    # 2枚目の画像をアフィン変換で位置補正
+    rows, cols = img1_gray.shape
+    M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+    aligned_img2_cv = cv2.warpAffine(img2_cv, M, (cols, rows))
+    aligned_img2 = Image.fromarray(aligned_img2_cv)
+
+    # 比較対象外の領域を示すマスクを作成
+    mask = Image.new('L', img1.size, 255) # 255は比較対象
+    mask_draw = ImageDraw.Draw(mask)
+    if shift_y > 0:
+        mask_draw.rectangle([0, 0, cols, int(shift_y)], fill=0) # 0は比較対象外
+    elif shift_y < 0:
+        mask_draw.rectangle([0, rows - int(abs(shift_y)), cols, rows], fill=0)
+    if shift_x > 0:
+        mask_draw.rectangle([0, 0, int(shift_x), rows], fill=0)
+    elif shift_x < 0:
+        mask_draw.rectangle([cols - int(abs(shift_x)), 0, cols, rows], fill=0)
+    # --- ここまで --- 
 
     pixels1 = img1.load()
-    pixels2 = aligned_img2.load() # 補正後の画像で比較
+    pixels2 = aligned_img2.load()
+    mask_pixels = mask.load()
     width, height = img1.size
 
     diff_areas = []
     for y in range(height):
         for x in range(width):
+            # マスク領域は比較しない
+            if mask_pixels[x, y] == 0:
+                continue
+
             if color_difference(pixels1[x, y], pixels2[x, y]) > threshold:
                 diff_areas.append((x, y))
 

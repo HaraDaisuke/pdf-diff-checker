@@ -75,6 +75,11 @@
 
         <v-card v-if="resultImageUrl || isLoading" class="mt-6">
           <v-card-title class="text-center">比較結果</v-card-title>
+          <v-card-actions v-if="resultImageUrl && !isLoading" class="justify-center">
+             <v-btn color="secondary" @click="exportToPdf" prepend-icon="mdi-file-export">
+                PDFでエクスポート
+            </v-btn>
+          </v-card-actions>
           <v-divider></v-divider>
           <v-card-text class="d-flex justify-center align-center" style="min-height: 400px;">
             <div v-if="isLoading" class="text-center">
@@ -98,6 +103,7 @@
 
 <script setup>
 import { ref, watch } from 'vue';
+import jsPDF from 'jspdf';
 
 const file1 = ref(null);
 const file2 = ref(null);
@@ -107,11 +113,8 @@ const resultImageUrl = ref('');
 const isLoading = ref(false);
 const error = ref('');
 
-// Watch for changes in both sliders
 watch([threshold, boxSize], (newValues, oldValues) => {
-  // Only re-run comparison if files are already selected.
   if (file1.value && file2.value) {
-    // Check if either value has actually changed to avoid redundant calls on initial load
     if (newValues[0] !== oldValues[0] || newValues[1] !== oldValues[1]) {
         comparePdfs();
     }
@@ -164,4 +167,26 @@ const comparePdfs = async () => {
     isLoading.value = false;
   }
 };
+
+const exportToPdf = () => {
+  if (!resultImageUrl.value) return;
+
+  const img = new Image();
+  img.onload = () => {
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    const orientation = w > h ? 'l' : 'p';
+
+    // Use pixels as the unit. The library is unit-agnostic if you provide dimensions.
+    const doc = new jsPDF(orientation, 'px', [w, h]);
+
+    doc.addImage(img, 'PNG', 0, 0, w, h);
+    doc.save('diff-result.pdf');
+  };
+  img.onerror = () => {
+      error.value = "PDFのエクスポート中に画像の読み込みに失敗しました。"
+  }
+  img.src = resultImageUrl.value;
+};
+
 </script>

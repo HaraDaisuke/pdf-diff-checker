@@ -84,7 +84,6 @@ def run_comparison(img1: Image.Image, img2: Image.Image, threshold: int, box_siz
     aligned_img2_gray = cv2.cvtColor(aligned_img2_cv, cv2.COLOR_RGB2GRAY)
     _, thresh = cv2.threshold(aligned_img2_gray, 240, 255, cv2.THRESH_BINARY_INV)
     
-    # ★★★ 膨張処理を追加 ★★★
     if dilation_iterations > 0:
         kernel = np.ones((3,3), np.uint8)
         thresh = cv2.dilate(thresh, kernel, iterations=dilation_iterations)
@@ -92,7 +91,7 @@ def run_comparison(img1: Image.Image, img2: Image.Image, threshold: int, box_siz
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     rectangles = []
-    min_area = 50 # 小さすぎるノイズを除外
+    min_area = 50
     for cnt in contours:
         if cv2.contourArea(cnt) > min_area:
             x, y, w, h = cv2.boundingRect(cnt)
@@ -104,7 +103,8 @@ def run_comparison(img1: Image.Image, img2: Image.Image, threshold: int, box_siz
 
     return {
         "image": "data:image/png;base64," + img_base64,
-        "rectangles": rectangles
+        "rectangles": rectangles,
+        "aligned_img2_base64": base64.b64encode(io.BytesIO(aligned_img2_cv.tobytes()).getvalue()).decode('utf-8') # Return aligned img2 for subsequent part alignment
     }
 
 @app.post("/api/diff")
@@ -117,7 +117,7 @@ async def diff_endpoint(file1: UploadFile = File(...), file2: UploadFile = File(
 @app.post("/api/align-part")
 async def align_part_endpoint(
     file1: UploadFile = File(...),
-    file2: UploadFile = File(...),
+    file2: UploadFile = File(...), # Original file2 PDF
     threshold: int = Form(30),
     box_size: int = Form(5),
     dilation_iterations: int = Form(0),
@@ -125,31 +125,47 @@ async def align_part_endpoint(
 ):
     img1 = await convert_pdf_to_image(file1)
     img2 = await convert_pdf_to_image(file2)
+
+    # --- Perform global alignment first ---
+    img1_cv = np.array(img1)
+    img2_cv = np.array(img2)
+    img1_gray = cv2.cvtColor(img1_cv, cv2.COLOR_RGB2GRAY)
+    img2_gray = cv2.cvtColor(img2_cv, cv2.COLOR_RGB2GRAY)
+    
+    shift, _ = cv2.phaseCorrelate(np.float32(img1_gray), np.float32(img2_gray))
+    dx, dy = shift
+    shift_x, shift_y = -dx, -dy
+
+    rows, cols = img1_gray.shape
+    M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+    aligned_img2_cv = cv2.warpAffine(img2_cv, M, (cols, rows))
+    aligned_img2 = Image.fromarray(aligned_img2_cv)
+    # --- End global alignment ---
+
     rect = json.loads(selected_rect)
 
     # --- 選択部品の位置合わせ ---
-    # 元画像からテンプレートを切り出す
-    part_template = img2.crop((rect['x'], rect['y'], rect['x'] + rect['w'], rect['y'] + rect['h']))
+    # part_templateはaligned_img2から切り出す
+    part_template = aligned_img2.crop((rect['x'], rect['y'], rect['x'] + rect['w'], rect['y'] + rect['h']))
     template_cv = np.array(part_template)
-    img1_cv = np.array(img1)
-
-    # テンプレートマッチングで最適な位置を探す
-    # 検索範囲を限定することも可能だが、ここでは画像全体を対象
-    res = cv2.matchTemplate(img1_cv, template_cv, cv2.TM_CCOEFF_NORMED)
+    
+    # テンプレートマッチングはaligned_img1に対して行う
+    aligned_img1_cv = np.array(img1) # img1は既にグローバルアラインメントの基準なのでそのまま
+    res = cv2.matchTemplate(aligned_img1_cv, template_cv, cv2.TM_CCOEFF_NORMED)
     _, _, _, max_loc = cv2.minMaxLoc(res)
     new_x, new_y = max_loc
 
-    # 元のimg2をコピーし、部品を新しい位置に貼り付け直す
-    modified_img2 = img2.copy()
-    # 元の位置を白で塗りつぶす（背景色を仮定）
-    ImageDraw.Draw(modified_img2).rectangle(
+    # aligned_img2をコピーし、部品を新しい位置に貼り付け直す
+    modified_aligned_img2 = aligned_img2.copy()
+    # 元の位置を白で塗りつぶす
+    ImageDraw.Draw(modified_aligned_img2).rectangle(
         (rect['x'], rect['y'], rect['x'] + rect['w'], rect['y'] + rect['h']),
-        fill=(255, 255, 255) # 白で塗りつぶす
+        fill=(255, 255, 255)
     )
-    modified_img2.paste(part_template, (new_x, new_y))
+    modified_aligned_img2.paste(part_template, (new_x, new_y))
 
     # 修正後の画像で再比較
-    result = run_comparison(img1, modified_img2, threshold, box_size, dilation_iterations)
+    result = run_comparison(img1, modified_aligned_img2, threshold, box_size, dilation_iterations)
     return JSONResponse(content=result)
 
 @app.get("/")

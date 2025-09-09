@@ -36,7 +36,7 @@
                         thumb-label
                         :step="5"
                         :min="0"
-                        :max="150"
+                        :max="800"
                         :disabled="!file1 || !file2"
                     ></v-slider>
                     <div class="text-caption text-center">値が低いほど、わずかな色の違いも検出します。</div>
@@ -101,8 +101,8 @@ import { ref, watch } from 'vue';
 
 const file1 = ref(null);
 const file2 = ref(null);
-const threshold = ref(30);
-const boxSize = ref(5);
+const threshold = ref(470);
+const boxSize = ref(1);
 const resultImageUrl = ref('');
 const isLoading = ref(false);
 const error = ref('');

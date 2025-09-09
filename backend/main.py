@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -5,7 +6,8 @@ import fitz  # PyMuPDF
 from PIL import Image, ImageDraw
 import io
 import asyncio
-import math
+import cv2
+import numpy as np
 
 app = FastAPI()
 
@@ -31,6 +33,34 @@ async def convert_pdf_to_image(pdf_file: UploadFile):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"PDFの画像化に失敗しました: {e}")
 
+def align_images(img1: Image.Image, img2: Image.Image) -> Image.Image:
+    """OpenCVを使って2つの画像の位置を合わせる"""
+    # PIL画像をOpenCV画像(numpy.ndarray)に変換
+    img1_cv = np.array(img1)
+    img2_cv = np.array(img2)
+
+    # グレースケールに変換
+    img1_gray = cv2.cvtColor(img1_cv, cv2.COLOR_RGB2GRAY)
+    img2_gray = cv2.cvtColor(img2_cv, cv2.COLOR_RGB2GRAY)
+
+    # 高周波ノイズを減らすために浮動小数点数に変換
+    img1_float = np.float32(img1_gray)
+    img2_float = np.float32(img2_gray)
+
+    # 位相相関法でズレを検出
+    shift, _ = cv2.phaseCorrelate(img1_float, img2_float)
+    dx, dy = shift
+
+    # アフィン変換行列を作成（検出されたズレと逆方向に補正する）
+    rows, cols = img1_gray.shape
+    M = np.float32([[1, 0, -dx], [0, 1, -dy]])
+
+    # 2枚目の画像にアフィン変換を適用して位置を補正
+    aligned_img2_cv = cv2.warpAffine(img2_cv, M, (cols, rows))
+
+    # OpenCV画像をPIL画像に変換して返す
+    return Image.fromarray(aligned_img2_cv)
+
 def color_difference(p1, p2):
     """2つのピクセルの色差を計算する"""
     return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) + abs(p1[2] - p2[2])
@@ -40,7 +70,7 @@ async def create_diff_image(
     file1: UploadFile = File(...),
     file2: UploadFile = File(...),
     threshold: int = Form(30),
-    box_size: int = Form(5)  # ハイライトのサイズ
+    box_size: int = Form(5)
 ):
     """2つのPDFを比較し、差分をハイライトした画像を生成する"""
     img1_task = asyncio.create_task(convert_pdf_to_image(file1))
@@ -50,8 +80,11 @@ async def create_diff_image(
     if img1.size != img2.size:
         raise HTTPException(status_code=400, detail="PDFのページサイズまたは向きが異なります。")
 
+    # ★★★ 位置合わせ処理を追加 ★★★
+    aligned_img2 = align_images(img1, img2)
+
     pixels1 = img1.load()
-    pixels2 = img2.load()
+    pixels2 = aligned_img2.load() # 補正後の画像で比較
     width, height = img1.size
 
     diff_areas = []
@@ -63,7 +96,6 @@ async def create_diff_image(
     output_img = img1.copy()
     if diff_areas:
         draw = ImageDraw.Draw(output_img)
-        # 差分ピクセルを受け取ったbox_sizeで描画
         for x, y in diff_areas:
             draw.rectangle([x - box_size, y - box_size, x + box_size, y + box_size], outline="red", width=1)
 

@@ -28,6 +28,33 @@
               </v-col>
             </v-row>
 
+            <v-row class="mt-2 align-center">
+                <v-col cols="12" md="6">
+                    <v-slider
+                        v-model="threshold"
+                        label="差分検出の閾値"
+                        thumb-label
+                        :step="5"
+                        :min="0"
+                        :max="150"
+                        :disabled="!file1 || !file2"
+                    ></v-slider>
+                    <div class="text-caption text-center">値が低いほど、わずかな色の違いも検出します。</div>
+                </v-col>
+                <v-col cols="12" md="6">
+                    <v-slider
+                        v-model="boxSize"
+                        label="ハイライトの太さ"
+                        thumb-label
+                        :step="1"
+                        :min="1"
+                        :max="20"
+                        :disabled="!file1 || !file2"
+                    ></v-slider>
+                    <div class="text-caption text-center">値が大きいほど、ハイライトが太くなります。</div>
+                </v-col>
+            </v-row>
+
             <v-alert v-if="error" type="error" class="mt-4" dense dismissible>
               {{ error }}
             </v-alert>
@@ -41,9 +68,6 @@
                 size="large"
               >
                 比較する
-                <template v-slot:loader>
-                  <v-progress-circular indeterminate size="24"></v-progress-circular>
-                </template>
               </v-btn>
             </div>
           </v-card-text>
@@ -73,13 +97,26 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 
 const file1 = ref(null);
 const file2 = ref(null);
+const threshold = ref(30);
+const boxSize = ref(5);
 const resultImageUrl = ref('');
 const isLoading = ref(false);
 const error = ref('');
+
+// Watch for changes in both sliders
+watch([threshold, boxSize], (newValues, oldValues) => {
+  // Only re-run comparison if files are already selected.
+  if (file1.value && file2.value) {
+    // Check if either value has actually changed to avoid redundant calls on initial load
+    if (newValues[0] !== oldValues[0] || newValues[1] !== oldValues[1]) {
+        comparePdfs();
+    }
+  }
+});
 
 const comparePdfs = async () => {
   if (!file1.value || !file2.value) {
@@ -87,7 +124,6 @@ const comparePdfs = async () => {
     return;
   }
 
-  // v-file-input returns an array even for a single file, so we take the first element.
   const pdfFile1 = Array.isArray(file1.value) ? file1.value[0] : file1.value;
   const pdfFile2 = Array.isArray(file2.value) ? file2.value[0] : file2.value;
 
@@ -98,25 +134,28 @@ const comparePdfs = async () => {
 
   isLoading.value = true;
   error.value = '';
-  resultImageUrl.value = ''; // 既存の結果をクリア
 
   const formData = new FormData();
   formData.append('file1', pdfFile1);
   formData.append('file2', pdfFile2);
+  formData.append('threshold', threshold.value);
+  formData.append('box_size', boxSize.value);
 
   try {
-    // Note: Ensure the backend is running and CORS is configured for the frontend's origin
     const response = await fetch('http://localhost:8000/api/diff', {
       method: 'POST',
       body: formData,
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => null); // JSONパース失敗も考慮
+      const errorData = await response.json().catch(() => null);
       throw new Error(errorData?.detail || `サーバーエラー: ${response.statusText}`);
     }
 
     const imageBlob = await response.blob();
+    if (resultImageUrl.value) {
+      URL.revokeObjectURL(resultImageUrl.value);
+    }
     resultImageUrl.value = URL.createObjectURL(imageBlob);
 
   } catch (e) {

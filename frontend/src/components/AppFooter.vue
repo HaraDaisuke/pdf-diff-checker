@@ -1,6 +1,5 @@
 <template>
   <v-footer
-    app
     height="40"
   >
     <a

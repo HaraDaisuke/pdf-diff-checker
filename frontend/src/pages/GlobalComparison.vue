@@ -56,7 +56,7 @@
                     <div class="text-caption text-center">値が大きいほど、ハイライトが太くなります。</div>
                 </v-col>
             </v-row>
-            <v-row class="mt-2 align-center">
+            <!-- <v-row class="mt-2 align-center">
                 <v-col cols="12">
                     <v-slider
                         v-model="dilationIterations"
@@ -69,7 +69,7 @@
                     ></v-slider>
                     <div class="text-caption text-center">値が大きいほど、近くの部品が結合されます。</div>
                 </v-col>
-            </v-row>
+            </v-row>-->
 
             <v-alert v-if="error" type="error" class="mt-4" dense dismissible>
               {{ error }}

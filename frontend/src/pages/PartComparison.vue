@@ -114,33 +114,65 @@
     </v-row>
 
     <!-- 3. Cropped Images List -->
-    <v-card class="mt-4" v-if="croppedPairs.length > 0">
+    <v-card class="mt-4 mb-16" v-if="croppedPairs.length > 0">
       <v-card-title>切り出しリスト</v-card-title>
       <v-card-subtitle>ドラッグ＆ドロップで順番を入れ替えられます。</v-card-subtitle>
-      <v-divider class="mt-2"/>
-      <v-list>
-        <v-list-item 
-          v-for="(pair, index) in croppedPairs" 
-          :key="pair.id"
-          :draggable="true"
-          @dragstart="onDragStart($event, index)"
-          @dragover.prevent
-          @drop="onDrop($event, index)"
-          class="draggable-item"
-        >
-          <v-row align="center">
-            <v-col cols="1" class="text-center"><v-icon>mdi-drag-vertical</v-icon>{{ index + 1 }}</v-col>
-            <v-col cols="3"><v-img :src="pair.before" contain aspect-ratio="1.4"/></v-col>
-            <v-col cols="3"><v-img :src="pair.after" contain aspect-ratio="1.4"/></v-col>
-            <v-col cols="3">
-              <v-img v-if="pair.diff" :src="pair.diff" contain aspect-ratio="1.4"/>
-              <div v-else class="text-center text-disabled">比較待ち</div>
-            </v-col>
-            <v-col cols="2" class="text-center">
-                <v-btn icon small @click="removePair(pair.id)"><v-icon>mdi-delete</v-icon></v-btn>
-            </v-col>
-          </v-row>
-        </v-list-item>
+
+      <!-- Header Row -->
+      <v-row class="pa-2 text-center font-weight-bold" no-gutters>
+        <v-col cols="1">No.</v-col>
+        <v-col cols="10">
+            <v-row no-gutters>
+                <v-col cols="4">修正前</v-col>
+                <v-col cols="4">修正後</v-col>
+                <v-col cols="4">比較結果</v-col>
+            </v-row>
+        </v-col>
+        <v-col cols="1">操作</v-col>
+      </v-row>
+
+      <v-divider />
+      <v-list class="pa-0">
+        <div v-for="(pair, index) in croppedPairs" :key="pair.id">
+            <v-list-item
+                :draggable="true"
+                @dragstart="onDragStart($event, index)"
+                @dragover.prevent
+                @drop="onDrop($event, index)"
+                class="draggable-item"
+            >
+                <v-row align="center" no-gutters>
+                    <v-col cols="1" class="text-center d-flex align-center justify-center">
+                        <v-icon small>mdi-drag-vertical</v-icon>
+                        <span>{{ index + 1 }}</span>
+                    </v-col>
+                    <v-col cols="10">
+                        <v-row no-gutters>
+                            <v-col cols="4" class="pa-2">
+                                <v-card elevation="2">
+                                    <v-img :src="pair.before" contain aspect-ratio="1.4"/>
+                                </v-card>
+                            </v-col>
+                            <v-col cols="4" class="pa-2">
+                                <v-card elevation="2">
+                                    <v-img :src="pair.after" contain aspect-ratio="1.4"/>
+                                </v-card>
+                            </v-col>
+                            <v-col cols="4" class="pa-2">
+                                <v-card elevation="2" class="d-flex align-center justify-center" style="height: 100%;">
+                                    <v-img v-if="pair.diff" :src="pair.diff" contain aspect-ratio="1.4"/>
+                                    <div v-else class="text-center text-disabled">比較待ち</div>
+                                </v-card>
+                            </v-col>
+                        </v-row>
+                    </v-col>
+                    <v-col cols="1" class="text-center">
+                        <v-btn icon small @click="removePair(pair.id)"><v-icon>mdi-delete</v-icon></v-btn>
+                    </v-col>
+                </v-row>
+            </v-list-item>
+            <v-divider />
+        </div>
       </v-list>
     </v-card>
 
@@ -201,39 +233,68 @@ const nativeImageSize = ref({ width: 0, height: 0 });
 // --- Drag and Drop State ---
 const draggedIndex = ref(null);
 
+// Watch for the image sources to change, then redraw the canvases.
+// flush: 'post' ensures this runs after Vue has updated the DOM.
+watch(originalBeforeImage, (newValue) => {
+  if (newValue) {
+    redrawAllCanvases();
+  }
+}, { flush: 'post' });
+
 watch(isSyncMode, () => {
   // Reset pending selections when mode changes
   isWaitingForSecondSelection.value = false;
   firstSelectionCanvasRef.value = null;
-  redrawAllCanvases();
+  if (originalBeforeImage.value) {
+      redrawAllCanvases();
+  }
 });
 
 const getCanvasContext = (canvasEl) => canvasEl.getContext('2d');
 
-const renderImageOnCanvas = (canvasEl, imageSrc, callback) => {
-  if (!canvasEl) return;
-  const img = new Image();
-  img.onload = () => {
-    nativeImageSize.value = { width: img.naturalWidth, height: img.naturalHeight };
-    const container = canvasEl.parentElement;
-    if (!container) return;
-    const containerWidth = container.clientWidth;
-    const aspectRatio = img.naturalWidth / img.naturalHeight;
-    
-    canvasEl.width = containerWidth;
-    canvasEl.height = containerWidth / aspectRatio;
+const renderImageOnCanvas = (canvasEl, imageSrc) => {
+  return new Promise((resolve, reject) => {
+    if (!canvasEl) return reject(new Error("Canvas element not found"));
+    const img = new Image();
+    img.onload = () => {
+      nativeImageSize.value = { width: img.naturalWidth, height: img.naturalHeight };
+      const container = canvasEl.parentElement;
+      if (!container) return reject(new Error("Canvas container not found"));
+      const containerWidth = container.clientWidth;
+      if (containerWidth === 0) {
+          // If container is not rendered, wait and try again.
+          setTimeout(() => renderImageOnCanvas(canvasEl, imageSrc).then(resolve).catch(reject), 100);
+          return;
+      }
+      const aspectRatio = img.naturalWidth / img.naturalHeight;
+      
+      canvasEl.width = containerWidth;
+      canvasEl.height = containerWidth / aspectRatio;
 
-    const ctx = getCanvasContext(canvasEl);
-    ctx.drawImage(img, 0, 0, canvasEl.width, canvasEl.height);
-    if (callback) callback();
-  };
-  img.src = imageSrc;
+      const ctx = getCanvasContext(canvasEl);
+      ctx.drawImage(img, 0, 0, canvasEl.width, canvasEl.height);
+      resolve();
+    };
+    img.onerror = (err) => reject(err);
+    img.src = imageSrc;
+  });
 };
 
-const redrawAllCanvases = () => {
+const redrawAllCanvases = async () => {
     if (!originalBeforeImage.value || !originalAfterImage.value) return;
-    renderImageOnCanvas(canvasBefore.value, originalBeforeImage.value);
-    renderImageOnCanvas(canvasAfter.value, originalAfterImage.value);
+    if (!canvasBefore.value || !canvasAfter.value) {
+        error.value = "キャンバスの準備に失敗しました。";
+        return;
+    }
+    try {
+        await Promise.all([
+            renderImageOnCanvas(canvasBefore.value, originalBeforeImage.value),
+            renderImageOnCanvas(canvasAfter.value, originalAfterImage.value)
+        ]);
+    } catch (e) {
+        error.value = "画像の再描画中にエラーが発生しました。";
+        console.error(e);
+    }
 }
 
 const loadPdfs = async () => {
@@ -257,10 +318,9 @@ const loadPdfs = async () => {
     const response = await fetch('http://localhost:8000/api/diff', { method: 'POST', body: formData });
     if (!response.ok) { const err = await response.json(); throw new Error(err.detail); }
     const data = await response.json();
+    // This will trigger the watcher to call redrawAllCanvases
     originalBeforeImage.value = data.image_before;
     originalAfterImage.value = data.image_after;
-    await nextTick();
-    redrawAllCanvases();
   } catch (e) {
     error.value = e.message;
   } finally {
@@ -275,7 +335,6 @@ const getMousePos = (canvasEl, evt) => {
 
 const startDrawing = (event) => {
   if (isSyncMode.value === false && isWaitingForSecondSelection.value === true && firstSelectionCanvasRef.value === event.target) {
-      // Prevent drawing on the same canvas again in independent mode
       return;
   }
   isDrawing.value = true;
@@ -295,6 +354,7 @@ const draw = (event) => {
   
   const canvases = isSyncMode.value ? [canvasBefore.value, canvasAfter.value] : [event.target];
   canvases.forEach(canvas => {
+      if (!canvas) return;
       const ctx = getCanvasContext(canvas);
       ctx.lineTo(pos.x, pos.y);
       ctx.strokeStyle = '#ff00ff';
@@ -313,13 +373,13 @@ const stopDrawing = async (event) => {
 
   const canvases = isSyncMode.value ? [canvasBefore.value, canvasAfter.value] : [event.target];
   canvases.forEach(canvas => {
+      if (!canvas) return;
       const ctx = getCanvasContext(canvas);
       ctx.closePath();
       ctx.fillStyle = 'rgba(255, 0, 255, 0.2)';
       ctx.fill();
   });
 
-  // --- Logic branching for modes ---
   if (isSyncMode.value) {
       await cropAndAddPair({ before: currentDrawingPoints.value, after: currentDrawingPoints.value });
   } else {
@@ -345,6 +405,7 @@ const stopDrawing = async (event) => {
 };
 
 const cropAndAddPair = async ({ before: beforePoints, after: afterPoints }) => {
+    if (!canvasBefore.value) return;
     const scale = nativeImageSize.value.width / canvasBefore.value.width;
     const nativeBefore = beforePoints.map(p => ({ x: Math.round(p.x * scale), y: Math.round(p.y * scale) }));
     const nativeAfter = afterPoints.map(p => ({ x: Math.round(p.x * scale), y: Math.round(p.y * scale) }));
@@ -429,3 +490,4 @@ const onDrop = (event, targetIndex) => {
 onMounted(() => { window.addEventListener('resize', redrawAllCanvases); });
 onBeforeUnmount(() => { window.removeEventListener('resize', redrawAllCanvases); });
 </script>
+

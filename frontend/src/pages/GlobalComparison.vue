@@ -1,9 +1,9 @@
 <template>
   <v-container>
     <v-row justify="center">
-      <v-col cols="12" md="10" lg="8">
+      <v-col cols="12">
         <v-card class="pa-4">
-          <v-card-title class="text-h5 text-center mb-4">PDF Diff Checker</v-card-title>
+          <v-card-title class="text-h5 text-center mb-4">全体比較</v-card-title>
           <v-card-subtitle class="text-center">修正前と修正後のPDFをアップロードして変更箇所を確認します。</v-card-subtitle>
 
           <v-card-text>
@@ -89,52 +89,86 @@
           </v-card-text>
         </v-card>
 
-        <v-card v-if="resultImageUrl || isLoading" class="mt-6">
-          <v-card-title class="text-center">比較結果</v-card-title>
-          <v-card-actions v-if="resultImageUrl && !isLoading" class="justify-center">
-             <v-btn color="secondary" @click="exportToPdf" prepend-icon="mdi-file-export">
-                PDFでエクスポート
-            </v-btn>
-            <v-btn color="teal" @click="alignSelectedPart" :disabled="!selectedPart" prepend-icon="mdi-target-account">
-                選択部品を最適位置に移動
-            </v-btn>
-          </v-card-actions>
-          <v-divider></v-divider>
-          <v-card-text class="d-flex justify-center align-center pa-0" style="min-height: 400px;">
-            <div v-if="isLoading" class="text-center">
-              <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
-              <p class="mt-4">比較処理を実行中です...</p>
-            </div>
-            <div v-if="resultImageUrl && !isLoading" style="position: relative; line-height: 0;">
-              <v-img
-                :src="resultImageUrl"
-                alt="比較結果"
-                contain
-                max-height="80vh"
-                :width="imageDimensions.width"
-                :height="imageDimensions.height"
-              ></v-img>
-              <svg v-if="imageDimensions.width > 0" :viewBox="`0 0 ${imageDimensions.width} ${imageDimensions.height}`" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;">
-                <rect
-                  v-for="(part, index) in detectedParts"
-                  :key="index"
-                  :x="part.x"
-                  :y="part.y"
-                  :width="part.w"
-                  :height="part.h"
-                  fill="rgba(0, 0, 255, 0.1)"
-                  :stroke="selectedPart === part ? '#ff00ff' : '#0000ff'"
-                  stroke-width="2"
-                  @click="selectPart(part)"
-                  style="cursor: pointer;"
-                />
-              </svg>
-            </div>
-          </v-card-text>
-        </v-card>
+        <div v-if="isLoading" class="text-center mt-10">
+          <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
+          <p class="mt-4">比較処理を実行中です...</p>
+        </div>
+
+        <v-row v-if="diffImageUrl && !isLoading" class="mt-6">
+          <!-- 修正前 -->
+          <v-col cols="12" md="4">
+            <v-card>
+              <v-card-title class="text-center">修正前</v-card-title>
+              <v-divider />
+              <v-card-text class="pa-0">
+                <v-img :src="beforeImageUrl" contain max-height="80vh" />
+              </v-card-text>
+            </v-card>
+          </v-col>
+
+          <!-- 修正後 -->
+          <v-col cols="12" md="4">
+            <v-card>
+              <v-card-title class="text-center">修正後</v-card-title>
+              <v-divider />
+              <v-card-text class="pa-0">
+                <v-img :src="afterImageUrl" contain max-height="80vh" />
+              </v-card-text>
+            </v-card>
+          </v-col>
+
+          <!-- 比較結果 -->
+          <v-col cols="12" md="4">
+            <v-card>
+              <v-card-title class="text-center">比較結果</v-card-title>
+              <v-divider />
+              <v-card-text class="pa-0">
+                <div style="position: relative; line-height: 0;">
+                  <v-img
+                    :src="diffImageUrl"
+                    alt="比較結果"
+                    contain
+                    max-height="80vh"
+                  ></v-img>
+                  <svg v-if="false" :viewBox="`0 0 ${imageDimensions.width} ${imageDimensions.height}`" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;">
+                    <rect
+                      v-for="(part, index) in detectedParts"
+                      :key="index"
+                      :x="part.x"
+                      :y="part.y"
+                      :width="part.w"
+                      :height="part.h"
+                      fill="rgba(0, 0, 255, 0.1)"
+                      :stroke="selectedPart === part ? '#ff00ff' : '#0000ff'"
+                      stroke-width="2"
+                      @click="selectPart(part)"
+                      style="cursor: pointer;"
+                    />
+                  </svg>
+                </div>
+              </v-card-text>
+            </v-card>
+          </v-col>
+        </v-row>
 
       </v-col>
     </v-row>
+
+    <v-tooltip text="PDF形式でエクスポート">
+      <template v-slot:activator="{ props }">
+        <v-fab
+          v-if="diffImageUrl && !isLoading"
+          v-bind="props"
+          icon="mdi-file-export"
+          location="bottom end"
+          position="fixed"
+          app
+          color="secondary"
+          @click="exportToPdf"
+        ></v-fab>
+      </template>
+    </v-tooltip>
+
   </v-container>
 </template>
 
@@ -146,21 +180,23 @@ const file1 = ref(null);
 const file2 = ref(null);
 const threshold = ref(470);
 const boxSize = ref(1);
-const dilationIterations = ref(0); // New ref for dilation
-const resultImageUrl = ref('');
+const dilationIterations = ref(0);
+
+const beforeImageUrl = ref('');
+const afterImageUrl = ref('');
+const diffImageUrl = ref('');
+
 const detectedParts = ref([]);
 const selectedPart = ref(null);
 const imageDimensions = reactive({ width: 0, height: 0 });
 const isLoading = ref(false);
 const error = ref('');
 
-watch([threshold, boxSize, dilationIterations], (newValues, oldValues) => {
-  if (file1.value && file2.value) {
-    if (newValues[0] !== oldValues[0] || newValues[1] !== oldValues[1] || newValues[2] !== oldValues[2]) {
-        comparePdfs();
-    }
+watch([threshold, boxSize, dilationIterations], () => {
+  if (file1.value && file2.value && diffImageUrl.value) {
+    comparePdfs();
   }
-});
+}, { deep: true });
 
 const getImageDimensions = (imageUrl) => {
     const img = new Image();
@@ -169,6 +205,17 @@ const getImageDimensions = (imageUrl) => {
         imageDimensions.height = img.naturalHeight;
     };
     img.src = imageUrl;
+};
+
+const resetResults = () => {
+  beforeImageUrl.value = '';
+  afterImageUrl.value = '';
+  diffImageUrl.value = '';
+  detectedParts.value = [];
+  selectedPart.value = null;
+  imageDimensions.width = 0;
+  imageDimensions.height = 0;
+  error.value = '';
 };
 
 const comparePdfs = async () => {
@@ -186,17 +233,14 @@ const comparePdfs = async () => {
   }
 
   isLoading.value = true;
-  error.value = '';
-  resultImageUrl.value = '';
-  detectedParts.value = [];
-  selectedPart.value = null;
+  resetResults();
 
   const formData = new FormData();
   formData.append('file1', pdfFile1);
   formData.append('file2', pdfFile2);
   formData.append('threshold', threshold.value);
   formData.append('box_size', boxSize.value);
-  formData.append('dilation_iterations', dilationIterations.value); // Send dilation value
+  formData.append('dilation_iterations', dilationIterations.value);
 
   try {
     const response = await fetch('http://localhost:8000/api/diff', {
@@ -210,9 +254,11 @@ const comparePdfs = async () => {
     }
 
     const data = await response.json();
-    resultImageUrl.value = data.image;
+    beforeImageUrl.value = data.image_before;
+    afterImageUrl.value = data.image_after;
+    diffImageUrl.value = data.image_diff;
     detectedParts.value = data.rectangles;
-    getImageDimensions(data.image);
+    getImageDimensions(data.image_diff);
 
   } catch (e) {
     error.value = e.message;
@@ -246,7 +292,7 @@ const alignSelectedPart = async () => {
     formData.append('file2', pdfFile2);
     formData.append('threshold', threshold.value);
     formData.append('box_size', boxSize.value);
-    formData.append('dilation_iterations', dilationIterations.value); // Send dilation value
+    formData.append('dilation_iterations', dilationIterations.value);
     formData.append('selected_rect', JSON.stringify(selectedPart.value));
 
     try {
@@ -261,9 +307,11 @@ const alignSelectedPart = async () => {
         }
 
         const data = await response.json();
-        resultImageUrl.value = data.image;
+        beforeImageUrl.value = data.image_before;
+        afterImageUrl.value = data.image_after;
+        diffImageUrl.value = data.image_diff;
         detectedParts.value = data.rectangles;
-        getImageDimensions(data.image);
+        getImageDimensions(data.image_diff);
         selectedPart.value = null; // Clear selection after alignment
 
     } catch (e) {
@@ -274,7 +322,7 @@ const alignSelectedPart = async () => {
 };
 
 const exportToPdf = () => {
-  if (!resultImageUrl.value) return;
+  if (!diffImageUrl.value) return;
 
   const img = new Image();
   img.onload = () => {
@@ -290,7 +338,7 @@ const exportToPdf = () => {
   img.onerror = () => {
       error.value = "PDFのエクスポート中に画像の読み込みに失敗しました。"
   }
-  img.src = resultImageUrl.value;
+  img.src = diffImageUrl.value;
 };
 
 </script>

@@ -97,14 +97,21 @@ def run_comparison(img1: Image.Image, img2: Image.Image, threshold: int, box_siz
             x, y, w, h = cv2.boundingRect(cnt)
             rectangles.append({"x": x, "y": y, "w": w, "h": h})
 
-    buf = io.BytesIO()
-    output_img.save(buf, format='PNG')
-    img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    # --- 画像のBase64エンコード ---
+    def to_base64(img):
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return base64.b64encode(buf.getvalue()).decode('utf-8')
+
+    img_diff_base64 = to_base64(output_img)
+    img_before_base64 = to_base64(img1)
+    img_after_base64 = to_base64(aligned_img2)
 
     return {
-        "image": "data:image/png;base64," + img_base64,
+        "image_diff": f"data:image/png;base64,{img_diff_base64}",
+        "image_before": f"data:image/png;base64,{img_before_base64}",
+        "image_after": f"data:image/png;base64,{img_after_base64}",
         "rectangles": rectangles,
-        "aligned_img2_base64": base64.b64encode(io.BytesIO(aligned_img2_cv.tobytes()).getvalue()).decode('utf-8') # Return aligned img2 for subsequent part alignment
     }
 
 @app.post("/api/diff")
@@ -113,6 +120,48 @@ async def diff_endpoint(file1: UploadFile = File(...), file2: UploadFile = File(
     img2 = await convert_pdf_to_image(file2)
     result = run_comparison(img1, img2, threshold, box_size, dilation_iterations)
     return JSONResponse(content=result)
+
+
+@app.post("/api/diff-images")
+async def diff_images_endpoint(file1: UploadFile = File(...), file2: UploadFile = File(...), threshold: int = Form(30), box_size: int = Form(5), dilation_iterations: int = Form(0)):
+    """
+    2つの画像を直接比較し、差分を検出するエンドポイント。
+    サイズが異なる場合は、大きい方に合わせて小さい方に余白を追加する。
+    """
+    try:
+        img1_bytes = await file1.read()
+        img2_bytes = await file2.read()
+
+        img1 = Image.open(io.BytesIO(img1_bytes)).convert("RGBA")
+        img2 = Image.open(io.BytesIO(img2_bytes)).convert("RGBA")
+
+        # サイズが異なる場合の処理
+        if img1.size != img2.size:
+            max_width = max(img1.width, img2.width)
+            max_height = max(img1.height, img2.height)
+
+            # 新しい背景画像を作成 (白色)
+            new_img1 = Image.new('RGBA', (max_width, max_height), (255, 255, 255, 255))
+            new_img2 = Image.new('RGBA', (max_width, max_height), (255, 255, 255, 255))
+
+            # 元の画像を中央にペースト
+            paste_pos1 = ((max_width - img1.width) // 2, (max_height - img1.height) // 2)
+            paste_pos2 = ((max_width - img2.width) // 2, (max_height - img2.height) // 2)
+            
+            new_img1.paste(img1, paste_pos1, img1)
+            new_img2.paste(img2, paste_pos2, img2)
+            
+            img1 = new_img1
+            img2 = new_img2
+
+        # 比較処理のためにRGBに変換
+        img1 = img1.convert("RGB")
+        img2 = img2.convert("RGB")
+
+        result = run_comparison(img1, img2, threshold, box_size, dilation_iterations)
+        return JSONResponse(content=result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"画像の処理中にエラーが発生しました: {e}")
 
 @app.post("/api/align-part")
 async def align_part_endpoint(
@@ -167,6 +216,158 @@ async def align_part_endpoint(
     # 修正後の画像で再比較
     result = run_comparison(img1, modified_aligned_img2, threshold, box_size, dilation_iterations)
     return JSONResponse(content=result)
+
+
+@app.post("/api/crop-by-selection")
+async def crop_by_selection_endpoint(
+    file1: UploadFile = File(...),
+    file2: UploadFile = File(...),
+    selection_points: str = Form(...)
+):
+    try:
+        img1 = await convert_pdf_to_image(file1)
+        img2 = await convert_pdf_to_image(file2)
+
+        # グローバル位置合わせ
+        img1_cv = np.array(img1)
+        img2_cv = np.array(img2)
+        img1_gray = cv2.cvtColor(img1_cv, cv2.COLOR_RGB2GRAY)
+        img2_gray = cv2.cvtColor(img2_cv, cv2.COLOR_RGB2GRAY)
+        shift, _ = cv2.phaseCorrelate(np.float32(img1_gray), np.float32(img2_gray))
+        dx, dy = shift
+        shift_x, shift_y = -dx, -dy
+        rows, cols = img1_gray.shape
+        M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+        aligned_img2_cv = cv2.warpAffine(img2_cv, M, (cols, rows))
+        aligned_img1_cv = img1_cv
+
+        # ポリゴンマスクの作成
+        points = json.loads(selection_points)
+        if not points:
+            raise HTTPException(status_code=400, detail="選択範囲の点がありません")
+            
+        pts = np.array([[p['x'], p['y']] for p in points], dtype=np.int32)
+        x, y, w, h = cv2.boundingRect(pts)
+
+        # 座標が画像の範囲外に出ないようにクリッピング
+        x = max(0, x)
+        y = max(0, y)
+        w = min(w, cols - x)
+        h = min(h, rows - y)
+
+        # boundingRectで計算されたx,yは全体座標なので、ポリゴンの座標をROI基準に変換
+        pts_roi = pts - np.array([x, y])
+
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(mask, [pts_roi], 255)
+
+        # ROI（関心領域）を切り出し
+        roi1 = aligned_img1_cv[y:y+h, x:x+w]
+        roi2 = aligned_img2_cv[y:y+h, x:x+w]
+
+        # RGBAに変換してアルファチャンネル（透明度）を追加
+        roi1_rgba = cv2.cvtColor(roi1, cv2.COLOR_RGB2RGBA)
+        roi2_rgba = cv2.cvtColor(roi2, cv2.COLOR_RGB2RGBA)
+
+        # マスクをアルファチャンネルに適用
+        roi1_rgba[:, :, 3] = mask
+        roi2_rgba[:, :, 3] = mask
+
+        # PIL画像に変換してBase64エンコード
+        cropped_img1 = Image.fromarray(roi1_rgba)
+        cropped_img2 = Image.fromarray(roi2_rgba)
+
+        def to_base64(img):
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            return base64.b64encode(buf.getvalue()).decode('utf-8')
+
+        return JSONResponse(content={
+            "cropped_before": f"data:image/png;base64,{to_base64(cropped_img1)}",
+            "cropped_after": f"data:image/png;base64,{to_base64(cropped_img2)}",
+        })
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"処理中にエラーが発生しました: {e}")
+
+
+def _crop_image(image_cv, points_str: str):
+    """画像(numpy array)と座標リストのJSON文字列を受け取り、切り抜いたPIL画像を返す"""
+    points = json.loads(points_str)
+    if not points:
+        return None
+
+    rows, cols = image_cv.shape[:2]
+    pts = np.array([[p['x'], p['y']] for p in points], dtype=np.int32)
+    x, y, w, h = cv2.boundingRect(pts)
+
+    # 座標が画像の範囲外に出ないようにクリッピング
+    x = max(0, x)
+    y = max(0, y)
+    w = min(w, cols - x)
+    h = min(h, rows - y)
+
+    # boundingRectで計算されたx,yは全体座標なので、ポリゴンの座標をROI基準に変換
+    pts_roi = pts - np.array([x, y])
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask, [pts_roi], 255)
+
+    # ROI（関心領域）を切り出し
+    roi = image_cv[y:y+h, x:x+w]
+
+    # RGBAに変換してアルファチャンネル（透明度）を追加
+    roi_rgba = cv2.cvtColor(roi, cv2.COLOR_RGB2RGBA)
+
+    # マスクをアルファチャンネルに適用
+    roi_rgba[:, :, 3] = mask
+
+    return Image.fromarray(roi_rgba)
+
+
+@app.post("/api/crop-by-independent-selections")
+async def crop_by_independent_selections_endpoint(
+    file1: UploadFile = File(...),
+    file2: UploadFile = File(...),
+    selection_points_before: str = Form(...),
+    selection_points_after: str = Form(...)
+):
+    try:
+        img1 = await convert_pdf_to_image(file1)
+        img2 = await convert_pdf_to_image(file2)
+
+        # グローバル位置合わせ
+        img1_cv = np.array(img1)
+        img2_cv = np.array(img2)
+        img1_gray = cv2.cvtColor(img1_cv, cv2.COLOR_RGB2GRAY)
+        img2_gray = cv2.cvtColor(img2_cv, cv2.COLOR_RGB2GRAY)
+        shift, _ = cv2.phaseCorrelate(np.float32(img1_gray), np.float32(img2_gray))
+        dx, dy = shift
+        shift_x, shift_y = -dx, -dy
+        M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+        rows, cols = img1_gray.shape
+        aligned_img2_cv = cv2.warpAffine(img2_cv, M, (cols, rows))
+        aligned_img1_cv = img1_cv
+
+        # それぞれの選択範囲で画像を切り出し
+        cropped_img1 = _crop_image(aligned_img1_cv, selection_points_before)
+        cropped_img2 = _crop_image(aligned_img2_cv, selection_points_after)
+
+        if cropped_img1 is None or cropped_img2 is None:
+            raise HTTPException(status_code=400, detail="選択範囲の点がありません")
+
+        def to_base64(img):
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            return base64.b64encode(buf.getvalue()).decode('utf-8')
+
+        return JSONResponse(content={
+            "cropped_before": f"data:image/png;base64,{to_base64(cropped_img1)}",
+            "cropped_after": f"data:image/png;base64,{to_base64(cropped_img2)}",
+        })
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"処理中にエラーが発生しました: {e}")
 
 @app.get("/")
 def read_root():

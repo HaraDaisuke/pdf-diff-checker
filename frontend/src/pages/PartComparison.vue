@@ -335,10 +335,18 @@ const loadPdfs = async () => {
 
   try {
     const response = await fetch('http://localhost:8000/api/diff', { method: 'POST', body: formData });
-    if (!response.ok) { const err = await response.json(); throw new Error(err.detail); }
+    if (!response.ok) { 
+        const err = await response.json().catch(() => ({ detail: 'サーバーエラーが発生しました。' })); 
+        throw new Error(err.detail); 
+    }
     const data = await response.json();
-    originalBeforeImage.value = data.image_before;
-    originalAfterImage.value = data.image_after;
+    if (data.results && data.results.length > 0) {
+        const firstPageResult = data.results[0];
+        originalBeforeImage.value = firstPageResult.image_before;
+        originalAfterImage.value = firstPageResult.image_after;
+    } else {
+        throw new Error("サーバーから有効な比較結果が返されませんでした。");
+    }
   } catch (e) {
     error.value = e.message;
   } finally {

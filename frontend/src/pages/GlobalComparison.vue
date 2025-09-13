@@ -169,7 +169,7 @@
 
 <script setup>
 import { ref, watch, reactive } from 'vue';
-import jsPDF from 'jspdf';
+import { PDFDocument } from 'pdf-lib';
 
 const file1 = ref(null);
 const file2 = ref(null);
@@ -316,24 +316,38 @@ const alignSelectedPart = async () => {
     }
 };
 
-const exportToPdf = () => {
+const exportToPdf = async () => {
   if (!diffImageUrl.value) return;
 
-  const img = new Image();
-  img.onload = () => {
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
-    const orientation = w > h ? 'l' : 'p';
+  try {
+    const pngImageBytes = await fetch(diffImageUrl.value).then((res) => res.arrayBuffer());
+    
+    const pdfDoc = await PDFDocument.create();
+    const pngImage = await pdfDoc.embedPng(pngImageBytes);
+    
+    const page = pdfDoc.addPage([pngImage.width, pngImage.height]);
+    page.drawImage(pngImage, {
+      x: 0,
+      y: 0,
+      width: pngImage.width,
+      height: pngImage.height,
+    });
 
-    const doc = new jsPDF(orientation, 'px', [w, h]);
+    const pdfBytes = await pdfDoc.save();
 
-    doc.addImage(img, 'PNG', 0, 0, w, h);
-    doc.save('diff-result.pdf');
-  };
-  img.onerror = () => {
-      error.value = "PDFのエクスポート中に画像の読み込みに失敗しました。"
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'diff-result.pdf';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+
+  } catch (e) {
+    console.error("PDFのエクスポートに失敗しました。", e);
+    error.value = "PDFのエクスポートに失敗しました。";
   }
-  img.src = diffImageUrl.value;
 };
 
 </script>

@@ -167,10 +167,23 @@
                         </v-row>
                     </v-col>
                     <v-col cols="1" class="text-center">
+                        <v-btn icon small @click="toggleComment(pair)"><v-icon>mdi-comment-plus-outline</v-icon></v-btn>
                         <v-btn icon small @click="removePair(pair.id)"><v-icon>mdi-delete</v-icon></v-btn>
                     </v-col>
                 </v-row>
             </v-list-item>
+            <v-expand-transition>
+                <div v-show="pair.showComment" class="pa-4 pt-0">
+                    <v-textarea
+                        v-model="pair.comment"
+                        label="コメント"
+                        rows="2"
+                        auto-grow
+                        variant="outlined"
+                        hide-details
+                    ></v-textarea>
+                </div>
+            </v-expand-transition>
             <v-divider />
         </div>
       </v-list>
@@ -201,63 +214,68 @@
 </style>
 
 <script setup>
-import { ref, nextTick, onMounted, onBeforeUnmount, watch, computed } from 'vue';
-import jsPDF from 'jspdf';
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue';
+import { PDFDocument, rgb } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 
+// --- reactive state ---
 const file1 = ref(null);
 const file2 = ref(null);
-
 const isLoading = ref(false);
 const isComparing = ref(false);
 const error = ref('');
-
 const originalBeforeImage = ref(null);
 const originalAfterImage = ref(null);
-
 const canvasBefore = ref(null);
 const canvasAfter = ref(null);
-
 const croppedPairs = ref([]);
-
 const diffThreshold = ref(500);
 const highlightThickness = ref(2);
-
-// --- Mode State ---
+const japaneseFont = ref(null); // Holds the font ArrayBuffer
 const isSyncMode = ref(true);
 const isWaitingForSecondSelection = ref(false);
 const firstSelectionCanvasRef = ref(null);
 const selectionBeforePoints = ref([]);
 const selectionAfterPoints = ref([]);
-
-// --- Drawing State ---
 const isDrawing = ref(false);
 const currentDrawingPoints = ref([]);
 const nativeImageSize = ref({ width: 0, height: 0 });
-
-// --- Drag and Drop State ---
 const draggedIndex = ref(null);
 
+// --- computed ---
 const allPairsCompared = computed(() => {
   return croppedPairs.value.length > 0 && croppedPairs.value.every(p => p.diff);
 });
 
-// Watch for the image sources to change, then redraw the canvases.
-// flush: 'post' ensures this runs after Vue has updated the DOM.
+// --- watchers ---
 watch(originalBeforeImage, (newValue) => {
-  if (newValue) {
-    redrawAllCanvases();
-  }
+  if (newValue) redrawAllCanvases();
 }, { flush: 'post' });
 
 watch(isSyncMode, () => {
-  // Reset pending selections when mode changes
   isWaitingForSecondSelection.value = false;
   firstSelectionCanvasRef.value = null;
-  if (originalBeforeImage.value) {
-      redrawAllCanvases();
+  if (originalBeforeImage.value) redrawAllCanvases();
+});
+
+// --- lifecycle hooks ---
+onMounted(async () => {
+  window.addEventListener('resize', redrawAllCanvases);
+  try {
+    const fontResponse = await fetch('/NotoSansJP-Regular.ttf');
+    if (!fontResponse.ok) throw new Error('Font fetch failed');
+    japaneseFont.value = await fontResponse.arrayBuffer();
+  } catch (e) {
+    console.error("Japanese font failed to load:", e);
+    error.value = "PDF出力用の日本語フォントが読み込めませんでした。";
   }
 });
 
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', redrawAllCanvases);
+});
+
+// --- methods ---
 const getCanvasContext = (canvasEl) => canvasEl.getContext('2d');
 
 const renderImageOnCanvas = (canvasEl, imageSrc) => {
@@ -270,15 +288,12 @@ const renderImageOnCanvas = (canvasEl, imageSrc) => {
       if (!container) return reject(new Error("Canvas container not found"));
       const containerWidth = container.clientWidth;
       if (containerWidth === 0) {
-          // If container is not rendered, wait and try again.
-          setTimeout(() => renderImageOnCanvas(canvasEl, imageSrc).then(resolve).catch(reject), 100);
-          return;
+        setTimeout(() => renderImageOnCanvas(canvasEl, imageSrc).then(resolve).catch(reject), 100);
+        return;
       }
       const aspectRatio = img.naturalWidth / img.naturalHeight;
-      
       canvasEl.width = containerWidth;
       canvasEl.height = containerWidth / aspectRatio;
-
       const ctx = getCanvasContext(canvasEl);
       ctx.drawImage(img, 0, 0, canvasEl.width, canvasEl.height);
       resolve();
@@ -289,21 +304,17 @@ const renderImageOnCanvas = (canvasEl, imageSrc) => {
 };
 
 const redrawAllCanvases = async () => {
-    if (!originalBeforeImage.value || !originalAfterImage.value) return;
-    if (!canvasBefore.value || !canvasAfter.value) {
-        error.value = "キャンバスの準備に失敗しました。";
-        return;
-    }
-    try {
-        await Promise.all([
-            renderImageOnCanvas(canvasBefore.value, originalBeforeImage.value),
-            renderImageOnCanvas(canvasAfter.value, originalAfterImage.value)
-        ]);
-    } catch (e) {
-        error.value = "画像の再描画中にエラーが発生しました。";
-        console.error(e);
-    }
-}
+  if (!originalBeforeImage.value || !originalAfterImage.value || !canvasBefore.value || !canvasAfter.value) return;
+  try {
+    await Promise.all([
+      renderImageOnCanvas(canvasBefore.value, originalBeforeImage.value),
+      renderImageOnCanvas(canvasAfter.value, originalAfterImage.value)
+    ]);
+  } catch (e) {
+    error.value = "画像の再描画中にエラーが発生しました。";
+    console.error(e);
+  }
+};
 
 const loadPdfs = async () => {
   if (!file1.value || !file2.value) { error.value = '2つのPDFファイルを指定してください。'; return; }
@@ -326,7 +337,6 @@ const loadPdfs = async () => {
     const response = await fetch('http://localhost:8000/api/diff', { method: 'POST', body: formData });
     if (!response.ok) { const err = await response.json(); throw new Error(err.detail); }
     const data = await response.json();
-    // This will trigger the watcher to call redrawAllCanvases
     originalBeforeImage.value = data.image_before;
     originalAfterImage.value = data.image_after;
   } catch (e) {
@@ -439,7 +449,14 @@ const cropAndAddPair = async ({ before: beforePoints, after: afterPoints }) => {
         const response = await fetch(url, { method: 'POST', body: formData });
         if (!response.ok) { const err = await response.json(); throw new Error(err.detail); }
         const data = await response.json();
-        croppedPairs.value.push({ id: Date.now(), before: data.cropped_before, after: data.cropped_after, diff: null });
+        croppedPairs.value.push({ 
+            id: Date.now(), 
+            before: data.cropped_before, 
+            after: data.cropped_after, 
+            diff: null,
+            comment: '',
+            showComment: false
+        });
         setTimeout(redrawAllCanvases, 100);
     } catch (e) {
         error.value = e.message;
@@ -480,78 +497,127 @@ const compareAllPairs = async () => {
 };
 
 const exportToPdf = async () => {
-  const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
-  const margin = 10;
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const contentWidth = pageWidth - (margin * 2);
-  const colWidth = contentWidth / 4;
-  const imageWidth = colWidth - 5;
-  let y = margin;
-
-  // PDF Title
-  doc.setFontSize(16);
-  doc.text('Part Comparison Report', pageWidth / 2, y, { align: 'center' });
-  y += 10;
-
-  // Table Header
-  doc.setFontSize(12);
-  doc.text('No.', margin + 5, y);
-  doc.text('Before', margin + colWidth, y);
-  doc.text('After', margin + colWidth * 2, y);
-  doc.text('Result', margin + colWidth * 3, y);
-  y += 5;
-  doc.setDrawColor(0);
-  doc.line(margin, y, pageWidth - margin, y);
-  y += 2;
-
-  for (let i = 0; i < croppedPairs.value.length; i++) {
-    const pair = croppedPairs.value[i];
-    if (!pair.diff) continue;
-
-    const img = new Image();
-    img.src = pair.before;
-    await new Promise(resolve => img.onload = resolve);
-    const aspectRatio = img.naturalWidth / img.naturalHeight;
-    const imageHeight = imageWidth / aspectRatio;
-    const rowHeight = imageHeight + 4; // image + padding
-
-    if (y + rowHeight > pageHeight - margin) {
-      doc.addPage();
-      y = margin;
-      // Redraw header on new page
-      doc.setFontSize(12);
-      doc.text('No.', margin + 5, y);
-      doc.text('Before', margin + colWidth, y);
-      doc.text('After', margin + colWidth * 2, y);
-      doc.text('Result', margin + colWidth * 3, y);
-      y += 5;
-      doc.setDrawColor(0);
-      doc.line(margin, y, pageWidth - margin, y);
-      y += 2;
-    }
-
-    // "No." column
-    doc.setFontSize(12);
-    doc.text(String(i + 1), margin + 5, y + rowHeight / 2, { baseline: 'middle' });
-
-    // Image columns
-    const imageY = y;
-    doc.addImage(pair.before, 'PNG', margin + colWidth, imageY, imageWidth, imageHeight);
-    doc.addImage(pair.after, 'PNG', margin + colWidth * 2, imageY, imageWidth, imageHeight);
-    doc.addImage(pair.diff, 'PNG', margin + colWidth * 3, imageY, imageWidth, imageHeight);
-    
-    y += rowHeight;
-    doc.setDrawColor(200);
-    doc.line(margin, y, pageWidth - margin, y);
-    y += 2;
+  if (!japaneseFont.value) {
+    error.value = "PDF出力用の日本語フォントが読み込まれていません。ページをリロードしてみてください。";
+    return;
   }
 
-  doc.save('part-comparison-report.pdf');
+  try {
+    const pdfDoc = await PDFDocument.create();
+    pdfDoc.registerFontkit(fontkit);
+    const customFont = await pdfDoc.embedFont(japaneseFont.value);
+    
+    let page = pdfDoc.addPage();
+    const { width, height } = page.getSize();
+    const margin = 40;
+    const contentWidth = width - (margin * 2);
+    const colWidth = contentWidth / 4;
+    const imageWidth = colWidth - 15;
+    let y = height - margin;
+
+    const title = '部分比較レポート';
+    const titleWidth = customFont.widthOfTextAtSize(title, 18);
+    page.drawText(title, {
+      x: width / 2 - titleWidth / 2,
+      y: y,
+      font: customFont,
+      size: 18,
+      color: rgb(0, 0, 0),
+    });
+    y -= 30;
+
+    const drawHeader = () => {
+      page.setFont(customFont);
+      page.setFontSize(12);
+      page.drawText('No.', { x: margin + 5, y: y });
+      page.drawText('修正前', { x: margin + colWidth, y: y });
+      page.drawText('修正後', { x: margin + colWidth * 2, y: y });
+      page.drawText('比較結果', { x: margin + colWidth * 3, y: y });
+      y -= 10;
+      page.drawLine({ start: { x: margin, y: y }, end: { x: width - margin, y: y }, thickness: 0.5 });
+      y -= 10;
+    };
+
+    drawHeader();
+
+    for (let i = 0; i < croppedPairs.value.length; i++) {
+      const pair = croppedPairs.value[i];
+      if (!pair.diff) continue;
+
+      const beforeImageBytes = await fetch(pair.before).then(res => res.arrayBuffer());
+      const afterImageBytes = await fetch(pair.after).then(res => res.arrayBuffer());
+      const diffImageBytes = await fetch(pair.diff).then(res => res.arrayBuffer());
+
+      const beforeImage = await pdfDoc.embedPng(beforeImageBytes);
+      const afterImage = await pdfDoc.embedPng(afterImageBytes);
+      const diffImage = await pdfDoc.embedPng(diffImageBytes);
+
+      const imageHeight = (imageWidth / beforeImage.width) * beforeImage.height;
+      
+      let commentHeight = 0;
+      const commentFontSize = 9;
+      const commentLineHeight = commentFontSize * 1.2;
+      let commentLines = [];
+      if (pair.comment) {
+          const comment = `コメント: ${pair.comment}`;
+          const commentCharsPerLine = Math.floor(((colWidth * 3 - 15) / (commentFontSize * 0.6)));
+          let textLeft = comment;
+          while(textLeft.length > 0) {
+              commentLines.push(textLeft.substring(0, commentCharsPerLine));
+              textLeft = textLeft.substring(commentCharsPerLine);
+          }
+          commentHeight = commentLines.length * commentLineHeight + 10;
+      }
+
+      const rowHeight = imageHeight + commentHeight + 10;
+
+      if (y - rowHeight < margin) {
+        page = pdfDoc.addPage();
+        y = height - margin;
+        drawHeader();
+      }
+
+      page.drawText(String(i + 1), { x: margin + 5, y: y - imageHeight / 2, font: customFont, size: 12 });
+      page.drawImage(beforeImage, { x: margin + colWidth, y: y - imageHeight, width: imageWidth, height: imageHeight });
+      page.drawImage(afterImage, { x: margin + colWidth * 2, y: y - imageHeight, width: imageWidth, height: imageHeight });
+      page.drawImage(diffImage, { x: margin + colWidth * 3, y: y - imageHeight, width: imageWidth, height: imageHeight });
+      y -= imageHeight;
+
+      if (pair.comment) {
+          y -= 10;
+          commentLines.forEach(line => {
+              page.drawText(line, { x: margin + colWidth, y: y, font: customFont, size: commentFontSize, color: rgb(0.2, 0.2, 0.2) });
+              y -= commentLineHeight;
+          });
+      }
+
+      y -= 10;
+      page.drawLine({ start: { x: margin, y: y }, end: { x: width - margin, y: y }, thickness: 0.2, color: rgb(0.8, 0.8, 0.8) });
+      y -= 10;
+    }
+
+    const pdfBytes = await pdfDoc.save();
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'part-comparison-report.pdf';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+
+  } catch (e) {
+    console.error("PDFのエクスポートに失敗しました。", e);
+    error.value = "PDFのエクスポートに失敗しました。";
+  }
 };
 
 const removePair = (id) => {
     croppedPairs.value = croppedPairs.value.filter(p => p.id !== id);
+}
+
+const toggleComment = (pair) => {
+    pair.showComment = !pair.showComment;
 }
 
 const onDragStart = (event, index) => {
@@ -565,8 +631,4 @@ const onDrop = (event, targetIndex) => {
   croppedPairs.value.splice(targetIndex, 0, draggedItem);
   draggedIndex.value = null;
 };
-
-onMounted(() => { window.addEventListener('resize', redrawAllCanvases); });
-onBeforeUnmount(() => { window.removeEventListener('resize', redrawAllCanvases); });
 </script>
-

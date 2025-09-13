@@ -4,7 +4,7 @@
       <v-col cols="12">
         <v-card class="pa-4">
           <v-card-title class="text-h5 text-center mb-4">全体比較</v-card-title>
-          <v-card-subtitle class="text-center">修正前と修正後のPDFをアップロードして変更箇所を確認します。</v-card-subtitle>
+          <v-card-subtitle class="text-center">修正前と修正後のPDFをアップロードして、ページごとに変更箇所を確認します。</v-card-subtitle>
 
           <v-card-text>
             <v-row>
@@ -56,20 +56,6 @@
                     <div class="text-caption text-center">値が大きいほど、ハイライトが太くなります。</div>
                 </v-col>
             </v-row>
-            <!-- <v-row class="mt-2 align-center">
-                <v-col cols="12">
-                    <v-slider
-                        v-model="dilationIterations"
-                        label="クラスタリング密集度"
-                        thumb-label
-                        :step="1"
-                        :min="0"
-                        :max="100"
-                        :disabled="!file1 || !file2"
-                    ></v-slider>
-                    <div class="text-caption text-center">値が大きいほど、近くの部品が結合されます。</div>
-                </v-col>
-            </v-row>-->
 
             <v-alert v-if="error" type="error" class="mt-4" dense dismissible>
               {{ error }}
@@ -89,7 +75,7 @@
                 color="secondary"
                 class="ml-4"
                 size="large"
-                :disabled="!diffImageUrl || isLoading"
+                :disabled="comparisonResults.length === 0 || isLoading"
                 @click="exportToPdf"
                 prepend-icon="mdi-file-export"
               >
@@ -104,62 +90,27 @@
           <p class="mt-4">比較処理を実行中です...</p>
         </div>
 
-        <v-row v-if="diffImageUrl && !isLoading" class="mt-6">
-          <!-- 修正前 -->
-          <v-col cols="12" md="4">
-            <v-card>
-              <v-card-title class="text-center">修正前</v-card-title>
-              <v-divider />
-              <v-card-text class="pa-0">
-                <v-img :src="beforeImageUrl" contain max-height="80vh" />
-              </v-card-text>
-            </v-card>
-          </v-col>
-
-          <!-- 修正後 -->
-          <v-col cols="12" md="4">
-            <v-card>
-              <v-card-title class="text-center">修正後</v-card-title>
-              <v-divider />
-              <v-card-text class="pa-0">
-                <v-img :src="afterImageUrl" contain max-height="80vh" />
-              </v-card-text>
-            </v-card>
-          </v-col>
-
-          <!-- 比較結果 -->
-          <v-col cols="12" md="4">
-            <v-card>
-              <v-card-title class="text-center">比較結果</v-card-title>
-              <v-divider />
-              <v-card-text class="pa-0">
-                <div style="position: relative; line-height: 0;">
-                  <v-img
-                    :src="diffImageUrl"
-                    alt="比較結果"
-                    contain
-                    max-height="80vh"
-                  ></v-img>
-                  <svg v-if="false" :viewBox="`0 0 ${imageDimensions.width} ${imageDimensions.height}`" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;">
-                    <rect
-                      v-for="(part, index) in detectedParts"
-                      :key="index"
-                      :x="part.x"
-                      :y="part.y"
-                      :width="part.w"
-                      :height="part.h"
-                      fill="rgba(0, 0, 255, 0.1)"
-                      :stroke="selectedPart === part ? '#ff00ff' : '#0000ff'"
-                      stroke-width="2"
-                      @click="selectPart(part)"
-                      style="cursor: pointer;"
-                    />
-                  </svg>
-                </div>
-              </v-card-text>
-            </v-card>
-          </v-col>
-        </v-row>
+        <!-- Results List -->
+        <div v-if="comparisonResults.length > 0 && !isLoading" class="mt-6">
+          <v-card v-for="result in comparisonResults" :key="result.page_number" class="mb-4">
+            <v-card-title class="text-h6">ページ {{ result.page_number }}</v-card-title>
+            <v-divider></v-divider>
+            <v-row no-gutters>
+              <v-col cols="12" md="4">
+                <v-card-subtitle class="text-center">修正前</v-card-subtitle>
+                <v-img :src="result.image_before" contain aspect-ratio="1.414" class="ma-2"></v-img>
+              </v-col>
+              <v-col cols="12" md="4">
+                <v-card-subtitle class="text-center">修正後</v-card-subtitle>
+                <v-img :src="result.image_after" contain aspect-ratio="1.414" class="ma-2"></v-img>
+              </v-col>
+              <v-col cols="12" md="4">
+                <v-card-subtitle class="text-center">比較結果</v-card-subtitle>
+                <v-img :src="result.image_diff" contain aspect-ratio="1.414" class="ma-2"></v-img>
+              </v-col>
+            </v-row>
+          </v-card>
+        </div>
 
       </v-col>
     </v-row>
@@ -168,48 +119,32 @@
 </template>
 
 <script setup>
-import { ref, watch, reactive } from 'vue';
-import { PDFDocument } from 'pdf-lib';
+import { ref, onMounted } from 'vue';
+import { PDFDocument, rgb } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 
 const file1 = ref(null);
 const file2 = ref(null);
 const threshold = ref(470);
 const boxSize = ref(1);
-const dilationIterations = ref(0);
-
-const beforeImageUrl = ref('');
-const afterImageUrl = ref('');
-const diffImageUrl = ref('');
-
-const detectedParts = ref([]);
-const selectedPart = ref(null);
-const imageDimensions = reactive({ width: 0, height: 0 });
+const comparisonResults = ref([]);
 const isLoading = ref(false);
 const error = ref('');
+const japaneseFont = ref(null);
 
-watch([threshold, boxSize, dilationIterations], () => {
-  if (file1.value && file2.value && diffImageUrl.value) {
-    comparePdfs();
+onMounted(async () => {
+  try {
+    const fontResponse = await fetch('/NotoSansJP-Regular.ttf');
+    if (fontResponse.ok) {
+      japaneseFont.value = await fontResponse.arrayBuffer();
+    }
+  } catch (e) {
+    console.error("Could not load Japanese font for PDF export.", e);
   }
-}, { deep: true });
-
-const getImageDimensions = (imageUrl) => {
-    const img = new Image();
-    img.onload = () => {
-        imageDimensions.width = img.naturalWidth;
-        imageDimensions.height = img.naturalHeight;
-    };
-    img.src = imageUrl;
-};
+});
 
 const resetResults = () => {
-  beforeImageUrl.value = '';
-  afterImageUrl.value = '';
-  diffImageUrl.value = '';
-  detectedParts.value = [];
-  selectedPart.value = null;
-  imageDimensions.width = 0;
-  imageDimensions.height = 0;
+  comparisonResults.value = [];
   error.value = '';
 };
 
@@ -235,7 +170,7 @@ const comparePdfs = async () => {
   formData.append('file2', pdfFile2);
   formData.append('threshold', threshold.value);
   formData.append('box_size', boxSize.value);
-  formData.append('dilation_iterations', dilationIterations.value);
+  formData.append('dilation_iterations', 0); // Not used in this UI, but required by API
 
   try {
     const response = await fetch('http://localhost:8000/api/diff', {
@@ -249,11 +184,7 @@ const comparePdfs = async () => {
     }
 
     const data = await response.json();
-    beforeImageUrl.value = data.image_before;
-    afterImageUrl.value = data.image_after;
-    diffImageUrl.value = data.image_diff;
-    detectedParts.value = data.rectangles;
-    getImageDimensions(data.image_diff);
+    comparisonResults.value = data.results;
 
   } catch (e) {
     error.value = e.message;
@@ -262,83 +193,56 @@ const comparePdfs = async () => {
   }
 };
 
-const selectPart = (part) => {
-    if (selectedPart.value === part) {
-        selectedPart.value = null; // Allow deselecting
-    } else {
-        selectedPart.value = part;
-    }
-};
-
-const alignSelectedPart = async () => {
-    if (!selectedPart.value || !file1.value || !file2.value) {
-        error.value = '部品が選択されていないか、元のPDFが指定されていません。';
-        return;
-    }
-
-    isLoading.value = true;
-    error.value = '';
-
-    const formData = new FormData();
-    const pdfFile1 = Array.isArray(file1.value) ? file1.value[0] : file1.value;
-    const pdfFile2 = Array.isArray(file2.value) ? file2.value[0] : file2.value;
-
-    formData.append('file1', pdfFile1);
-    formData.append('file2', pdfFile2);
-    formData.append('threshold', threshold.value);
-    formData.append('box_size', boxSize.value);
-    formData.append('dilation_iterations', dilationIterations.value);
-    formData.append('selected_rect', JSON.stringify(selectedPart.value));
-
-    try {
-        const response = await fetch('http://localhost:8000/api/align-part', {
-            method: 'POST',
-            body: formData,
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => null);
-            throw new Error(errorData?.detail || `サーバーエラー: ${response.statusText}`);
-        }
-
-        const data = await response.json();
-        beforeImageUrl.value = data.image_before;
-        afterImageUrl.value = data.image_after;
-        diffImageUrl.value = data.image_diff;
-        detectedParts.value = data.rectangles;
-        getImageDimensions(data.image_diff);
-        selectedPart.value = null; // Clear selection after alignment
-
-    } catch (e) {
-        error.value = e.message;
-    } finally {
-        isLoading.value = false;
-    }
-};
-
 const exportToPdf = async () => {
-  if (!diffImageUrl.value) return;
+  if (comparisonResults.value.length === 0) return;
 
   try {
-    const pngImageBytes = await fetch(diffImageUrl.value).then((res) => res.arrayBuffer());
-    
     const pdfDoc = await PDFDocument.create();
-    const pngImage = await pdfDoc.embedPng(pngImageBytes);
-    
-    const page = pdfDoc.addPage([pngImage.width, pngImage.height]);
-    page.drawImage(pngImage, {
-      x: 0,
-      y: 0,
-      width: pngImage.width,
-      height: pngImage.height,
-    });
+    let customFont = null;
+    if (japaneseFont.value) {
+        pdfDoc.registerFontkit(fontkit);
+        customFont = await pdfDoc.embedFont(japaneseFont.value);
+    }
+
+    for (const result of comparisonResults.value) {
+        const beforeImageBytes = await fetch(result.image_before).then(res => res.arrayBuffer());
+        const afterImageBytes = await fetch(result.image_after).then(res => res.arrayBuffer());
+        const diffImageBytes = await fetch(result.image_diff).then(res => res.arrayBuffer());
+
+        const beforeImage = await pdfDoc.embedPng(beforeImageBytes);
+        const afterImage = await pdfDoc.embedPng(afterImageBytes);
+        const diffImage = await pdfDoc.embedPng(diffImageBytes);
+
+        const page = pdfDoc.addPage();
+        const { width, height } = page.getSize();
+        const margin = 40;
+        const y = height - margin;
+
+        const title = `ページ ${result.page_number} の比較結果`;
+        if (customFont) {
+            page.drawText(title, { x: margin, y, font: customFont, size: 18, color: rgb(0, 0, 0) });
+        } else {
+            page.drawText(`Page ${result.page_number} Comparison Result`, { x: margin, y, size: 18, color: rgb(0, 0, 0) });
+        }
+
+        const imageWidth = (width - margin * 2) / 3 - 10;
+        const beforeHeight = (imageWidth / beforeImage.width) * beforeImage.height;
+        const afterHeight = (imageWidth / afterImage.width) * afterImage.height;
+        const diffHeight = (imageWidth / diffImage.width) * diffImage.height;
+        const maxImageHeight = Math.max(beforeHeight, afterHeight, diffHeight);
+
+        const imageY = y - 20 - maxImageHeight;
+
+        page.drawImage(beforeImage, { x: margin, y: imageY, width: imageWidth, height: beforeHeight });
+        page.drawImage(afterImage, { x: margin + imageWidth + 10, y: imageY, width: imageWidth, height: afterHeight });
+        page.drawImage(diffImage, { x: margin + (imageWidth + 10) * 2, y: imageY, width: imageWidth, height: diffHeight });
+    }
 
     const pdfBytes = await pdfDoc.save();
-
     const blob = new Blob([pdfBytes], { type: 'application/pdf' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = 'diff-result.pdf';
+    link.download = 'global-comparison-report.pdf';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

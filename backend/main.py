@@ -22,21 +22,23 @@ app.add_middleware(
 )
 
 async def convert_pdf_to_image(pdf_file: UploadFile):
-    """PDFをPillow画像オブジェクトに変換する"""
+    """PDFをPillow画像オブジェクトに変換する（最初のページのみ）"""
+    pdf_bytes = await pdf_file.read()
+    return await convert_pdf_page_to_image(pdf_bytes, 0)
+
+async def convert_pdf_page_to_image(pdf_bytes: bytes, page_num: int):
+    """PDFの指定されたページをPillow画像オブジェクトに変換する"""
     try:
-        pdf_bytes = await pdf_file.read()
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        page = doc.load_page(0)
+        if page_num >= doc.page_count:
+            raise HTTPException(status_code=400, detail=f"無効なページ番号: {page_num}")
+        page = doc.load_page(page_num)
         pix = page.get_pixmap(dpi=200)
         img = Image.open(io.BytesIO(pix.tobytes())).convert("RGB")
         doc.close()
         return img
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"PDFの画像化に失敗しました: {e}")
-
-def color_difference(p1, p2):
-    """2つのピクセルの色差を計算する"""
-    return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) + abs(p1[2] - p2[2])
+        raise HTTPException(status_code=400, detail=f"ページ {page_num + 1} の画像化に失敗しました: {e}")
 
 def run_comparison(img1: Image.Image, img2: Image.Image, threshold: int, box_size: int, dilation_iterations: int):
     """2つの画像を比較し、差分画像と部品リストを返す共通関数"""
@@ -71,7 +73,7 @@ def run_comparison(img1: Image.Image, img2: Image.Image, threshold: int, box_siz
     for y in range(rows):
         for x in range(cols):
             if mask_pixels[x, y] == 0: continue
-            if color_difference(pixels1[x, y], pixels2[x, y]) > threshold:
+            if color_difference(p1=pixels1[x, y], p2=pixels2[x, y]) > threshold:
                 diff_areas.append((x, y))
 
     output_img = img1.copy()
@@ -114,13 +116,37 @@ def run_comparison(img1: Image.Image, img2: Image.Image, threshold: int, box_siz
         "rectangles": rectangles,
     }
 
+def color_difference(p1, p2):
+    """2つのピクセルの色差を計算する"""
+    return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) + abs(p1[2] - p2[2])
+
 @app.post("/api/diff")
 async def diff_endpoint(file1: UploadFile = File(...), file2: UploadFile = File(...), threshold: int = Form(30), box_size: int = Form(5), dilation_iterations: int = Form(0)):
-    img1 = await convert_pdf_to_image(file1)
-    img2 = await convert_pdf_to_image(file2)
-    result = run_comparison(img1, img2, threshold, box_size, dilation_iterations)
-    return JSONResponse(content=result)
+    pdf1_bytes = await file1.read()
+    pdf2_bytes = await file2.read()
 
+    try:
+        doc1 = fitz.open(stream=pdf1_bytes, filetype="pdf")
+        doc2 = fitz.open(stream=pdf2_bytes, filetype="pdf")
+        
+        num_pages = min(doc1.page_count, doc2.page_count)
+        doc1.close()
+        doc2.close()
+
+        results = []
+
+        for i in range(num_pages):
+            img1 = await convert_pdf_page_to_image(pdf1_bytes, i)
+            img2 = await convert_pdf_page_to_image(pdf2_bytes, i)
+            
+            comparison_result = run_comparison(img1, img2, threshold, box_size, dilation_iterations)
+            comparison_result["page_number"] = i + 1
+            results.append(comparison_result)
+        
+        return JSONResponse(content={"results": results})
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF処理中にエラーが発生しました: {e}")
 
 @app.post("/api/diff-images")
 async def diff_images_endpoint(file1: UploadFile = File(...), file2: UploadFile = File(...), threshold: int = Form(30), box_size: int = Form(5), dilation_iterations: int = Form(0)):

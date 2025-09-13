@@ -176,11 +176,14 @@
       </v-list>
     </v-card>
 
-    <!-- 4. Compare All Button -->
     <v-footer app class="justify-center" style="background-color: transparent; padding-bottom: 16px;">
         <v-btn x-large color="success" @click="compareAllPairs" :disabled="croppedPairs.length === 0" :loading="isComparing">
             <v-icon left>mdi-select-compare</v-icon>
             選択範囲をすべて比較
+        </v-btn>
+        <v-btn x-large color="secondary" class="ml-4" @click="exportToPdf" :disabled="!allPairsCompared">
+            <v-icon left>mdi-file-export</v-icon>
+            PDFでエクスポート
         </v-btn>
     </v-footer>
 
@@ -198,7 +201,8 @@
 </style>
 
 <script setup>
-import { ref, nextTick, onMounted, onBeforeUnmount, watch } from 'vue';
+import { ref, nextTick, onMounted, onBeforeUnmount, watch, computed } from 'vue';
+import jsPDF from 'jspdf';
 
 const file1 = ref(null);
 const file2 = ref(null);
@@ -232,6 +236,10 @@ const nativeImageSize = ref({ width: 0, height: 0 });
 
 // --- Drag and Drop State ---
 const draggedIndex = ref(null);
+
+const allPairsCompared = computed(() => {
+  return croppedPairs.value.length > 0 && croppedPairs.value.every(p => p.diff);
+});
 
 // Watch for the image sources to change, then redraw the canvases.
 // flush: 'post' ensures this runs after Vue has updated the DOM.
@@ -469,6 +477,77 @@ const compareAllPairs = async () => {
     }
   }
   isComparing.value = false;
+};
+
+const exportToPdf = async () => {
+  const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+  const margin = 10;
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const contentWidth = pageWidth - (margin * 2);
+  const colWidth = contentWidth / 4;
+  const imageWidth = colWidth - 5;
+  let y = margin;
+
+  // PDF Title
+  doc.setFontSize(16);
+  doc.text('Part Comparison Report', pageWidth / 2, y, { align: 'center' });
+  y += 10;
+
+  // Table Header
+  doc.setFontSize(12);
+  doc.text('No.', margin + 5, y);
+  doc.text('Before', margin + colWidth, y);
+  doc.text('After', margin + colWidth * 2, y);
+  doc.text('Result', margin + colWidth * 3, y);
+  y += 5;
+  doc.setDrawColor(0);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 2;
+
+  for (let i = 0; i < croppedPairs.value.length; i++) {
+    const pair = croppedPairs.value[i];
+    if (!pair.diff) continue;
+
+    const img = new Image();
+    img.src = pair.before;
+    await new Promise(resolve => img.onload = resolve);
+    const aspectRatio = img.naturalWidth / img.naturalHeight;
+    const imageHeight = imageWidth / aspectRatio;
+    const rowHeight = imageHeight + 4; // image + padding
+
+    if (y + rowHeight > pageHeight - margin) {
+      doc.addPage();
+      y = margin;
+      // Redraw header on new page
+      doc.setFontSize(12);
+      doc.text('No.', margin + 5, y);
+      doc.text('Before', margin + colWidth, y);
+      doc.text('After', margin + colWidth * 2, y);
+      doc.text('Result', margin + colWidth * 3, y);
+      y += 5;
+      doc.setDrawColor(0);
+      doc.line(margin, y, pageWidth - margin, y);
+      y += 2;
+    }
+
+    // "No." column
+    doc.setFontSize(12);
+    doc.text(String(i + 1), margin + 5, y + rowHeight / 2, { baseline: 'middle' });
+
+    // Image columns
+    const imageY = y;
+    doc.addImage(pair.before, 'PNG', margin + colWidth, imageY, imageWidth, imageHeight);
+    doc.addImage(pair.after, 'PNG', margin + colWidth * 2, imageY, imageWidth, imageHeight);
+    doc.addImage(pair.diff, 'PNG', margin + colWidth * 3, imageY, imageWidth, imageHeight);
+    
+    y += rowHeight;
+    doc.setDrawColor(200);
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 2;
+  }
+
+  doc.save('part-comparison-report.pdf');
 };
 
 const removePair = (id) => {

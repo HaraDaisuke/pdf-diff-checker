@@ -85,6 +85,16 @@
               >
                 比較する
               </v-btn>
+              <v-btn
+                color="secondary"
+                class="ml-4"
+                size="large"
+                :disabled="!diffImageUrl || isLoading"
+                @click="exportToPdf"
+                prepend-icon="mdi-file-export"
+              >
+                PDFでエクスポート
+              </v-btn>
             </div>
           </v-card-text>
         </v-card>
@@ -153,21 +163,6 @@
 
       </v-col>
     </v-row>
-
-    <v-tooltip text="PDF形式でエクスポート">
-      <template v-slot:activator="{ props }">
-        <v-fab
-          v-if="diffImageUrl && !isLoading"
-          v-bind="props"
-          icon="mdi-file-export"
-          location="bottom end"
-          position="fixed"
-          app
-          color="secondary"
-          @click="exportToPdf"
-        ></v-fab>
-      </template>
-    </v-tooltip>
 
   </v-container>
 </template>

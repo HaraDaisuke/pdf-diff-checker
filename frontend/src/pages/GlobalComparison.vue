@@ -29,31 +29,45 @@
             </v-row>
 
             <v-row class="mt-2 align-center">
-                <v-col cols="12">
+                <v-col cols="12" md="3" class="text-subtitle-1 font-weight-medium pr-0">差分検出の閾値</v-col>
+                <v-col cols="auto" class="font-weight-medium text-caption">高感度</v-col>
+                <v-col>
                     <v-slider
                         v-model="threshold"
-                        label="差分検出の閾値"
                         thumb-label
                         :step="5"
                         :min="0"
                         :max="800"
                         :disabled="!file1 || !file2"
+                        hide-details
                     ></v-slider>
-                    <div class="text-caption text-center">値が低いほど、わずかな色の違いも検出します。</div>
+                </v-col>
+                <v-col cols="auto" class="font-weight-medium text-caption">低感度</v-col>
+            </v-row>
+            <v-row class="mt-n4">
+                <v-col offset-md="3">
+                    <div class="text-caption">値が低いほど、わずかな色の違いも検出します。</div>
                 </v-col>
             </v-row>
-            <v-row class="mt-2 align-center">
-                <v-col cols="12">
+            <v-row class="align-center">
+                <v-col cols="12" md="3" class="text-subtitle-1 font-weight-medium pr-0">ハイライトの太さ</v-col>
+                <v-col cols="auto" class="font-weight-medium text-caption">細い</v-col>
+                <v-col>
                     <v-slider
                         v-model="boxSize"
-                        label="ハイライトの太さ"
                         thumb-label
                         :step="1"
                         :min="1"
                         :max="20"
                         :disabled="!file1 || !file2"
+                        hide-details
                     ></v-slider>
-                    <div class="text-caption text-center">値が大きいほど、ハイライトが太くなります。</div>
+                </v-col>
+                <v-col cols="auto" class="font-weight-medium text-caption">太い</v-col>
+            </v-row>
+            <v-row class="mt-n4">
+                <v-col offset-md="3">
+                    <div class="text-caption">値が大きいほど、ハイライトが太くなります。</div>
                 </v-col>
             </v-row>
 

@@ -102,28 +102,40 @@
             ></v-switch>
           </v-col>
         </v-row>
-        <v-row>
+        <v-row class="mt-2">
             <v-col cols="12" md="6">
-                <v-slider
-                    v-model="diffThreshold"
-                    label="差分検出の閾値"
-                    thumb-label
-                    :step="5"
-                    :min="0"
-                    :max="800"
-                    hide-details
-                ></v-slider>
+                <div class="text-subtitle-1 font-weight-medium">差分検出の閾値</div>
+                <v-row align="center" dense class="mt-n2">
+                    <v-col cols="auto" class="font-weight-medium text-caption">高感度</v-col>
+                    <v-col>
+                        <v-slider
+                            v-model="diffThreshold"
+                            thumb-label
+                            :step="5"
+                            :min="0"
+                            :max="800"
+                            hide-details
+                        ></v-slider>
+                    </v-col>
+                    <v-col cols="auto" class="font-weight-medium text-caption">低感度</v-col>
+                </v-row>
             </v-col>
             <v-col cols="12" md="6">
-                <v-slider
-                    v-model="highlightThickness"
-                    label="ハイライトの太さ"
-                    thumb-label
-                    :step="1"
-                    :min="1"
-                    :max="20"
-                    hide-details
-                ></v-slider>
+                <div class="text-subtitle-1 font-weight-medium">ハイライトの太さ</div>
+                <v-row align="center" dense class="mt-n2">
+                    <v-col cols="auto" class="font-weight-medium text-caption">細い</v-col>
+                    <v-col>
+                        <v-slider
+                            v-model="highlightThickness"
+                            thumb-label
+                            :step="1"
+                            :min="1"
+                            :max="20"
+                            hide-details
+                        ></v-slider>
+                    </v-col>
+                    <v-col cols="auto" class="font-weight-medium text-caption">太い</v-col>
+                </v-row>
             </v-col>
         </v-row>
         <v-alert v-if="error" type="error" class="mt-4" dense dismissible>
@@ -294,7 +306,7 @@ const croppedPairs = ref([]);
 const diffThreshold = ref(500);
 const highlightThickness = ref(2);
 const japaneseFont = ref(null); // Holds the font ArrayBuffer
-const isSyncMode = ref(true);
+const isSyncMode = ref(false);
 const isWaitingForSecondSelection = ref(false);
 const firstSelectionCanvasRef = ref(null);
 const selectionBeforePoints = ref([]);

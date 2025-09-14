@@ -21,11 +21,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-async def convert_pdf_to_image(pdf_file: UploadFile):
-    """PDFをPillow画像オブジェクトに変換する（最初のページのみ）"""
-    pdf_bytes = await pdf_file.read()
-    return await convert_pdf_page_to_image(pdf_bytes, 0)
-
 async def convert_pdf_page_to_image(pdf_bytes: bytes, page_num: int):
     """PDFの指定されたページをPillow画像オブジェクトに変換する"""
     try:
@@ -150,10 +145,6 @@ async def diff_endpoint(file1: UploadFile = File(...), file2: UploadFile = File(
 
 @app.post("/api/diff-images")
 async def diff_images_endpoint(file1: UploadFile = File(...), file2: UploadFile = File(...), threshold: int = Form(30), box_size: int = Form(5), dilation_iterations: int = Form(0)):
-    """
-    2つの画像を直接比較し、差分を検出するエンドポイント。
-    サイズが異なる場合は、大きい方に合わせて小さい方に余白を追加する。
-    """
     try:
         img1_bytes = await file1.read()
         img2_bytes = await file2.read()
@@ -161,26 +152,18 @@ async def diff_images_endpoint(file1: UploadFile = File(...), file2: UploadFile 
         img1 = Image.open(io.BytesIO(img1_bytes)).convert("RGBA")
         img2 = Image.open(io.BytesIO(img2_bytes)).convert("RGBA")
 
-        # サイズが異なる場合の処理
         if img1.size != img2.size:
             max_width = max(img1.width, img2.width)
             max_height = max(img1.height, img2.height)
-
-            # 新しい背景画像を作成 (白色)
             new_img1 = Image.new('RGBA', (max_width, max_height), (255, 255, 255, 255))
             new_img2 = Image.new('RGBA', (max_width, max_height), (255, 255, 255, 255))
-
-            # 元の画像を中央にペースト
             paste_pos1 = ((max_width - img1.width) // 2, (max_height - img1.height) // 2)
             paste_pos2 = ((max_width - img2.width) // 2, (max_height - img2.height) // 2)
-            
             new_img1.paste(img1, paste_pos1, img1)
             new_img2.paste(img2, paste_pos2, img2)
-            
             img1 = new_img1
             img2 = new_img2
 
-        # 比較処理のためにRGBに変換
         img1 = img1.convert("RGB")
         img2 = img2.convert("RGB")
 
@@ -192,16 +175,18 @@ async def diff_images_endpoint(file1: UploadFile = File(...), file2: UploadFile 
 @app.post("/api/align-part")
 async def align_part_endpoint(
     file1: UploadFile = File(...),
-    file2: UploadFile = File(...), # Original file2 PDF
+    file2: UploadFile = File(...),
     threshold: int = Form(30),
     box_size: int = Form(5),
     dilation_iterations: int = Form(0),
     selected_rect: str = Form(...)
 ):
-    img1 = await convert_pdf_to_image(file1)
-    img2 = await convert_pdf_to_image(file2)
+    pdf1_bytes = await file1.read()
+    pdf2_bytes = await file2.read()
+    # Note: This endpoint assumes page 0 for now.
+    img1 = await convert_pdf_page_to_image(pdf1_bytes, 0)
+    img2 = await convert_pdf_page_to_image(pdf2_bytes, 0)
 
-    # --- Perform global alignment first ---
     img1_cv = np.array(img1)
     img2_cv = np.array(img2)
     img1_gray = cv2.cvtColor(img1_cv, cv2.COLOR_RGB2GRAY)
@@ -215,93 +200,90 @@ async def align_part_endpoint(
     M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
     aligned_img2_cv = cv2.warpAffine(img2_cv, M, (cols, rows))
     aligned_img2 = Image.fromarray(aligned_img2_cv)
-    # --- End global alignment ---
 
     rect = json.loads(selected_rect)
 
-    # --- 選択部品の位置合わせ ---
-    # part_templateはaligned_img2から切り出す
     part_template = aligned_img2.crop((rect['x'], rect['y'], rect['x'] + rect['w'], rect['y'] + rect['h']))
     template_cv = np.array(part_template)
     
-    # テンプレートマッチングはaligned_img1に対して行う
-    aligned_img1_cv = np.array(img1) # img1は既にグローバルアラインメントの基準なのでそのまま
+    aligned_img1_cv = np.array(img1)
     res = cv2.matchTemplate(aligned_img1_cv, template_cv, cv2.TM_CCOEFF_NORMED)
     _, _, _, max_loc = cv2.minMaxLoc(res)
     new_x, new_y = max_loc
 
-    # aligned_img2をコピーし、部品を新しい位置に貼り付け直す
     modified_aligned_img2 = aligned_img2.copy()
-    # 元の位置を白で塗りつぶす
     ImageDraw.Draw(modified_aligned_img2).rectangle(
         (rect['x'], rect['y'], rect['x'] + rect['w'], rect['y'] + rect['h']),
         fill=(255, 255, 255)
     )
     modified_aligned_img2.paste(part_template, (new_x, new_y))
 
-    # 修正後の画像で再比較
     result = run_comparison(img1, modified_aligned_img2, threshold, box_size, dilation_iterations)
     return JSONResponse(content=result)
 
+
+def _crop_image(image_cv, points_str: str):
+    points = json.loads(points_str)
+    if not points:
+        return None
+
+    rows, cols = image_cv.shape[:2]
+    pts = np.array([[p['x'], p['y']] for p in points], dtype=np.int32)
+    x, y, w, h = cv2.boundingRect(pts)
+
+    x = max(0, x)
+    y = max(0, y)
+    w = min(w, cols - x)
+    h = min(h, rows - y)
+
+    pts_roi = pts - np.array([x, y])
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask, [pts_roi], 255)
+
+    roi = image_cv[y:y+h, x:x+w]
+    roi_rgba = cv2.cvtColor(roi, cv2.COLOR_RGB2RGBA)
+    roi_rgba[:, :, 3] = mask
+
+    return Image.fromarray(roi_rgba)
 
 @app.post("/api/crop-by-selection")
 async def crop_by_selection_endpoint(
     file1: UploadFile = File(...),
     file2: UploadFile = File(...),
+    page_num1: int = Form(...),
+    page_num2: int = Form(...),
     selection_points: str = Form(...)
 ):
     try:
-        img1 = await convert_pdf_to_image(file1)
-        img2 = await convert_pdf_to_image(file2)
+        pdf1_bytes = await file1.read()
+        pdf2_bytes = await file2.read()
+        img1 = await convert_pdf_page_to_image(pdf1_bytes, page_num1)
+        img2 = await convert_pdf_page_to_image(pdf2_bytes, page_num2)
 
-        # グローバル位置合わせ
         img1_cv = np.array(img1)
         img2_cv = np.array(img2)
-        img1_gray = cv2.cvtColor(img1_cv, cv2.COLOR_RGB2GRAY)
-        img2_gray = cv2.cvtColor(img2_cv, cv2.COLOR_RGB2GRAY)
-        shift, _ = cv2.phaseCorrelate(np.float32(img1_gray), np.float32(img2_gray))
-        dx, dy = shift
-        shift_x, shift_y = -dx, -dy
-        rows, cols = img1_gray.shape
-        M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
-        aligned_img2_cv = cv2.warpAffine(img2_cv, M, (cols, rows))
-        aligned_img1_cv = img1_cv
 
-        # ポリゴンマスクの作成
-        points = json.loads(selection_points)
-        if not points:
+        # Only perform global alignment if the pages are the same
+        if page_num1 == page_num2:
+            img1_gray = cv2.cvtColor(img1_cv, cv2.COLOR_RGB2GRAY)
+            img2_gray = cv2.cvtColor(img2_cv, cv2.COLOR_RGB2GRAY)
+            shift, _ = cv2.phaseCorrelate(np.float32(img1_gray), np.float32(img2_gray))
+            dx, dy = shift
+            shift_x, shift_y = -dx, -dy
+            rows, cols = img1_gray.shape
+            M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+            aligned_img2_cv = cv2.warpAffine(img2_cv, M, (cols, rows))
+            aligned_img1_cv = img1_cv
+        else:
+            aligned_img1_cv = img1_cv
+            aligned_img2_cv = img2_cv
+
+        cropped_img1 = _crop_image(aligned_img1_cv, selection_points)
+        cropped_img2 = _crop_image(aligned_img2_cv, selection_points)
+
+        if cropped_img1 is None or cropped_img2 is None:
             raise HTTPException(status_code=400, detail="選択範囲の点がありません")
-            
-        pts = np.array([[p['x'], p['y']] for p in points], dtype=np.int32)
-        x, y, w, h = cv2.boundingRect(pts)
-
-        # 座標が画像の範囲外に出ないようにクリッピング
-        x = max(0, x)
-        y = max(0, y)
-        w = min(w, cols - x)
-        h = min(h, rows - y)
-
-        # boundingRectで計算されたx,yは全体座標なので、ポリゴンの座標をROI基準に変換
-        pts_roi = pts - np.array([x, y])
-
-        mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.fillPoly(mask, [pts_roi], 255)
-
-        # ROI（関心領域）を切り出し
-        roi1 = aligned_img1_cv[y:y+h, x:x+w]
-        roi2 = aligned_img2_cv[y:y+h, x:x+w]
-
-        # RGBAに変換してアルファチャンネル（透明度）を追加
-        roi1_rgba = cv2.cvtColor(roi1, cv2.COLOR_RGB2RGBA)
-        roi2_rgba = cv2.cvtColor(roi2, cv2.COLOR_RGB2RGBA)
-
-        # マスクをアルファチャンネルに適用
-        roi1_rgba[:, :, 3] = mask
-        roi2_rgba[:, :, 3] = mask
-
-        # PIL画像に変換してBase64エンコード
-        cropped_img1 = Image.fromarray(roi1_rgba)
-        cropped_img2 = Image.fromarray(roi2_rgba)
 
         def to_base64(img):
             buf = io.BytesIO()
@@ -316,66 +298,25 @@ async def crop_by_selection_endpoint(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"処理中にエラーが発生しました: {e}")
 
-
-def _crop_image(image_cv, points_str: str):
-    """画像(numpy array)と座標リストのJSON文字列を受け取り、切り抜いたPIL画像を返す"""
-    points = json.loads(points_str)
-    if not points:
-        return None
-
-    rows, cols = image_cv.shape[:2]
-    pts = np.array([[p['x'], p['y']] for p in points], dtype=np.int32)
-    x, y, w, h = cv2.boundingRect(pts)
-
-    # 座標が画像の範囲外に出ないようにクリッピング
-    x = max(0, x)
-    y = max(0, y)
-    w = min(w, cols - x)
-    h = min(h, rows - y)
-
-    # boundingRectで計算されたx,yは全体座標なので、ポリゴンの座標をROI基準に変換
-    pts_roi = pts - np.array([x, y])
-
-    mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.fillPoly(mask, [pts_roi], 255)
-
-    # ROI（関心領域）を切り出し
-    roi = image_cv[y:y+h, x:x+w]
-
-    # RGBAに変換してアルファチャンネル（透明度）を追加
-    roi_rgba = cv2.cvtColor(roi, cv2.COLOR_RGB2RGBA)
-
-    # マスクをアルファチャンネルに適用
-    roi_rgba[:, :, 3] = mask
-
-    return Image.fromarray(roi_rgba)
-
-
 @app.post("/api/crop-by-independent-selections")
 async def crop_by_independent_selections_endpoint(
     file1: UploadFile = File(...),
     file2: UploadFile = File(...),
+    page_num1: int = Form(...),
+    page_num2: int = Form(...),
     selection_points_before: str = Form(...),
     selection_points_after: str = Form(...)
 ):
     try:
-        img1 = await convert_pdf_to_image(file1)
-        img2 = await convert_pdf_to_image(file2)
+        pdf1_bytes = await file1.read()
+        pdf2_bytes = await file2.read()
+        img1 = await convert_pdf_page_to_image(pdf1_bytes, page_num1)
+        img2 = await convert_pdf_page_to_image(pdf2_bytes, page_num2)
 
-        # グローバル位置合わせ
-        img1_cv = np.array(img1)
-        img2_cv = np.array(img2)
-        img1_gray = cv2.cvtColor(img1_cv, cv2.COLOR_RGB2GRAY)
-        img2_gray = cv2.cvtColor(img2_cv, cv2.COLOR_RGB2GRAY)
-        shift, _ = cv2.phaseCorrelate(np.float32(img1_gray), np.float32(img2_gray))
-        dx, dy = shift
-        shift_x, shift_y = -dx, -dy
-        M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
-        rows, cols = img1_gray.shape
-        aligned_img2_cv = cv2.warpAffine(img2_cv, M, (cols, rows))
-        aligned_img1_cv = img1_cv
+        # Convert to CV format WITHOUT global alignment for independent selections
+        aligned_img1_cv = np.array(img1)
+        aligned_img2_cv = np.array(img2)
 
-        # それぞれの選択範囲で画像を切り出し
         cropped_img1 = _crop_image(aligned_img1_cv, selection_points_before)
         cropped_img2 = _crop_image(aligned_img2_cv, selection_points_after)
 
@@ -394,6 +335,56 @@ async def crop_by_independent_selections_endpoint(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"処理中にエラーが発生しました: {e}")
+
+@app.post("/api/pdf-thumbnails")
+async def pdf_thumbnails_endpoint(file: UploadFile = File(...)):
+    try:
+        pdf_bytes = await file.read()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        thumbnails = []
+        for i in range(doc.page_count):
+            page = doc.load_page(i)
+            pix = page.get_pixmap(dpi=72)
+            img = Image.open(io.BytesIO(pix.tobytes()))
+            
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            base64_str = base64.b64encode(buf.getvalue()).decode('utf-8')
+            thumbnails.append(f"data:image/png;base64,{base64_str}")
+            
+        doc.close()
+        return JSONResponse(content={"thumbnails": thumbnails})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"サムネイル生成中にエラーが発生しました: {e}")
+
+@app.post("/api/get-pdf-pages")
+async def get_pdf_pages_endpoint(
+    file1: UploadFile = File(...), 
+    file2: UploadFile = File(...),
+    page_num1: int = Form(...),
+    page_num2: int = Form(...)
+):
+    try:
+        pdf1_bytes = await file1.read()
+        pdf2_bytes = await file2.read()
+
+        img1 = await convert_pdf_page_to_image(pdf1_bytes, page_num1)
+        img2 = await convert_pdf_page_to_image(pdf2_bytes, page_num2)
+
+        def to_base64(img):
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            return base64.b64encode(buf.getvalue()).decode('utf-8')
+
+        img1_base64 = to_base64(img1)
+        img2_base64 = to_base64(img2)
+
+        return JSONResponse(content={
+            "image_before": f"data:image/png;base64,{img1_base64}",
+            "image_after": f"data:image/png;base64,{img2_base64}",
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ページ画像の取得中にエラーが発生しました: {e}")
 
 @app.get("/")
 def read_root():

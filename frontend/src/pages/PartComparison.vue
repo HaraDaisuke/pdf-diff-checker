@@ -1,10 +1,76 @@
 <template>
   <v-container fluid>
+    <!-- Page Selection Modal -->
+    <v-dialog v-model="showPageSelectionModal" persistent max-width="90vw">
+      <v-card>
+        <v-card-title class="text-h5">比較するページを選択</v-card-title>
+        <v-card-text>
+          <v-row>
+            <!-- Before PDF Thumbnails -->
+            <v-col cols="6">
+              <v-card-subtitle class="text-center">修正前 PDF</v-card-subtitle>
+              <v-sheet class="pa-2 overflow-y-auto" max-height="70vh">
+                <v-item-group v-model="selectedPageBefore" mandatory>
+                  <v-row dense>
+                    <v-col v-for="(thumb, index) in thumbnailsBefore" :key="`before-${index}`" cols="12">
+                      <v-item v-slot="{ isSelected, toggle }">
+                        <v-card 
+                          :color="isSelected ? 'primary' : ''"
+                          class="d-flex align-center pa-2"
+                          @click="toggle"
+                        >
+                          <span class="mr-4 font-weight-bold">{{ index + 1 }}</span>
+                          <v-img :src="thumb" aspect-ratio="1.414" contain height="200"></v-img>
+                        </v-card>
+                      </v-item>
+                    </v-col>
+                  </v-row>
+                </v-item-group>
+              </v-sheet>
+            </v-col>
+
+            <!-- After PDF Thumbnails -->
+            <v-col cols="6">
+              <v-card-subtitle class="text-center">修正後 PDF</v-card-subtitle>
+              <v-sheet class="pa-2 overflow-y-auto" max-height="70vh">
+                <v-item-group v-model="selectedPageAfter" mandatory>
+                  <v-row dense>
+                    <v-col v-for="(thumb, index) in thumbnailsAfter" :key="`after-${index}`" cols="12">
+                      <v-item v-slot="{ isSelected, toggle }">
+                        <v-card 
+                          :color="isSelected ? 'primary' : ''"
+                          class="d-flex align-center pa-2"
+                          @click="toggle"
+                        >
+                          <span class="mr-4 font-weight-bold">{{ index + 1 }}</span>
+                          <v-img :src="thumb" aspect-ratio="1.414" contain height="200"></v-img>
+                        </v-card>
+                      </v-item>
+                    </v-col>
+                  </v-row>
+                </v-item-group>
+              </v-sheet>
+            </v-col>
+          </v-row>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer></v-spacer>
+          <v-btn color="blue-darken-1" variant="text" @click="cancelPageSelection">キャンセル</v-btn>
+          <v-btn 
+            color="blue-darken-1" 
+            variant="tonal" 
+            @click="confirmPageSelection"
+            :disabled="selectedPageBefore === null || selectedPageAfter === null"
+          >確定</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- 1. File Inputs and Controls -->
     <v-card class="mb-4">
       <v-card-text>
         <v-row align="center">
-          <v-col cols="12" md="4">
+          <v-col cols="12" md="5">
             <v-file-input
               v-model="file1"
               label="修正前のPDF"
@@ -15,7 +81,7 @@
               hide-details
             ></v-file-input>
           </v-col>
-          <v-col cols="12" md="4">
+          <v-col cols="12" md="5">
             <v-file-input
               v-model="file2"
               label="修正後のPDF"
@@ -25,11 +91,6 @@
               dense
               hide-details
             ></v-file-input>
-          </v-col>
-          <v-col cols="12" md="2">
-            <v-btn color="primary" @click="loadPdfs" :disabled="!file1 || !file2" block>
-              表示
-            </v-btn>
           </v-col>
           <v-col cols="12" md="2">
             <v-switch
@@ -75,7 +136,7 @@
     <v-row v-if="isLoading" justify="center" class="my-10">
       <v-col cols="auto">
         <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
-        <p class="mt-4">画像を読み込み中です...</p>
+        <p class="mt-4">{{ loadingMessage }}</p>
       </v-col>
     </v-row>
 
@@ -83,7 +144,7 @@
     <v-row v-if="!isLoading && originalBeforeImage">
       <v-col cols="12" md="6">
         <v-card :class="{'selection-pending': isWaitingForSecondSelection && firstSelectionCanvasRef !== canvasBefore}">
-          <v-card-title class="text-center">修正前</v-card-title>
+          <v-card-title class="text-center">修正前 ({{ selectedPageBefore + 1 }}ページ)</v-card-title>
           <v-divider />
           <div style="position: relative; cursor: crosshair;">
             <canvas 
@@ -98,7 +159,7 @@
       </v-col>
       <v-col cols="12" md="6">
         <v-card :class="{'selection-pending': isWaitingForSecondSelection && firstSelectionCanvasRef !== canvasAfter}">
-          <v-card-title class="text-center">修正後</v-card-title>
+          <v-card-title class="text-center">修正後 ({{ selectedPageAfter + 1 }}ページ)</v-card-title>
           <v-divider />
           <div style="position: relative; cursor: crosshair;">
             <canvas 
@@ -222,6 +283,7 @@ import fontkit from '@pdf-lib/fontkit';
 const file1 = ref(null);
 const file2 = ref(null);
 const isLoading = ref(false);
+const loadingMessage = ref('画像を読み込み中です...');
 const isComparing = ref(false);
 const error = ref('');
 const originalBeforeImage = ref(null);
@@ -239,8 +301,16 @@ const selectionBeforePoints = ref([]);
 const selectionAfterPoints = ref([]);
 const isDrawing = ref(false);
 const currentDrawingPoints = ref([]);
-const nativeImageSize = ref({ width: 0, height: 0 });
+const nativeBeforeImageSize = ref({ width: 0, height: 0 });
+const nativeAfterImageSize = ref({ width: 0, height: 0 });
 const draggedIndex = ref(null);
+
+// --- Page Selection Modal State ---
+const showPageSelectionModal = ref(false);
+const thumbnailsBefore = ref([]);
+const thumbnailsAfter = ref([]);
+const selectedPageBefore = ref(null);
+const selectedPageAfter = ref(null);
 
 // --- computed ---
 const allPairsCompared = computed(() => {
@@ -248,6 +318,12 @@ const allPairsCompared = computed(() => {
 });
 
 // --- watchers ---
+watch([file1, file2], ([newFile1, newFile2]) => {
+  if (newFile1 && newFile2) {
+    openPageSelectionModal();
+  }
+});
+
 watch(originalBeforeImage, (newValue) => {
   if (newValue) redrawAllCanvases();
 }, { flush: 'post' });
@@ -276,19 +352,103 @@ onBeforeUnmount(() => {
 });
 
 // --- methods ---
+
+const openPageSelectionModal = async () => {
+  isLoading.value = true;
+  loadingMessage.value = 'PDFのサムネイルを生成中です...';
+  error.value = '';
+  try {
+    const [thumbs1, thumbs2] = await Promise.all([
+      fetchThumbnails(file1.value),
+      fetchThumbnails(file2.value)
+    ]);
+    thumbnailsBefore.value = thumbs1;
+    thumbnailsAfter.value = thumbs2;
+    selectedPageBefore.value = 0;
+    selectedPageAfter.value = 0;
+    showPageSelectionModal.value = true;
+  } catch (e) {
+    error.value = e.message;
+  } finally {
+    isLoading.value = false;
+  }
+};
+
+const fetchThumbnails = async (file) => {
+  const pdfFile = Array.isArray(file) ? file[0] : file;
+  const formData = new FormData();
+  formData.append('file', pdfFile);
+  const response = await fetch('http://localhost:8000/api/pdf-thumbnails', { method: 'POST', body: formData });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: 'サムネイルの取得に失敗しました。' }));
+    throw new Error(err.detail);
+  }
+  const data = await response.json();
+  return data.thumbnails;
+};
+
+const cancelPageSelection = () => {
+  showPageSelectionModal.value = false;
+  file1.value = null;
+  file2.value = null;
+};
+
+const confirmPageSelection = async () => {
+  showPageSelectionModal.value = false;
+  await loadSelectedPages();
+};
+
+const loadSelectedPages = async () => {
+  const pdfFile1 = Array.isArray(file1.value) ? file1.value[0] : file1.value;
+  const pdfFile2 = Array.isArray(file2.value) ? file2.value[0] : file2.value;
+
+  if (!pdfFile1 || !pdfFile2 || selectedPageBefore.value === null || selectedPageAfter.value === null) {
+    error.value = '比較するページが選択されていません。';
+    return;
+  }
+
+  isLoading.value = true;
+  loadingMessage.value = '選択されたページを読み込んでいます...';
+  error.value = '';
+  originalBeforeImage.value = null;
+  originalAfterImage.value = null;
+  croppedPairs.value = [];
+
+  const formData = new FormData();
+  formData.append('file1', pdfFile1);
+  formData.append('file2', pdfFile2);
+  formData.append('page_num1', selectedPageBefore.value);
+  formData.append('page_num2', selectedPageAfter.value);
+
+  try {
+    const response = await fetch('http://localhost:8000/api/get-pdf-pages', { method: 'POST', body: formData });
+    if (!response.ok) { 
+        const err = await response.json().catch(() => ({ detail: 'サーバーエラーが発生しました。' })); 
+        throw new Error(err.detail); 
+    }
+    const data = await response.json();
+    originalBeforeImage.value = data.image_before;
+    originalAfterImage.value = data.image_after;
+  } catch (e) {
+    error.value = e.message;
+  } finally {
+    isLoading.value = false;
+  }
+};
+
 const getCanvasContext = (canvasEl) => canvasEl.getContext('2d');
 
-const renderImageOnCanvas = (canvasEl, imageSrc) => {
+const renderImageOnCanvas = (canvasEl, imageSrc, nativeSizeRef) => {
   return new Promise((resolve, reject) => {
     if (!canvasEl) return reject(new Error("Canvas element not found"));
     const img = new Image();
     img.onload = () => {
-      nativeImageSize.value = { width: img.naturalWidth, height: img.naturalHeight };
+      nativeSizeRef.value = { width: img.naturalWidth, height: img.naturalHeight };
       const container = canvasEl.parentElement;
       if (!container) return reject(new Error("Canvas container not found"));
       const containerWidth = container.clientWidth;
       if (containerWidth === 0) {
-        setTimeout(() => renderImageOnCanvas(canvasEl, imageSrc).then(resolve).catch(reject), 100);
+        setTimeout(() => renderImageOnCanvas(canvasEl, imageSrc, nativeSizeRef).then(resolve).catch(reject), 100);
         return;
       }
       const aspectRatio = img.naturalWidth / img.naturalHeight;
@@ -307,50 +467,12 @@ const redrawAllCanvases = async () => {
   if (!originalBeforeImage.value || !originalAfterImage.value || !canvasBefore.value || !canvasAfter.value) return;
   try {
     await Promise.all([
-      renderImageOnCanvas(canvasBefore.value, originalBeforeImage.value),
-      renderImageOnCanvas(canvasAfter.value, originalAfterImage.value)
+      renderImageOnCanvas(canvasBefore.value, originalBeforeImage.value, nativeBeforeImageSize),
+      renderImageOnCanvas(canvasAfter.value, originalAfterImage.value, nativeAfterImageSize)
     ]);
   } catch (e) {
     error.value = "画像の再描画中にエラーが発生しました。";
     console.error(e);
-  }
-};
-
-const loadPdfs = async () => {
-  if (!file1.value || !file2.value) { error.value = '2つのPDFファイルを指定してください。'; return; }
-  const pdfFile1 = Array.isArray(file1.value) ? file1.value[0] : file1.value;
-  const pdfFile2 = Array.isArray(file2.value) ? file2.value[0] : file2.value;
-  if (!pdfFile1 || !pdfFile2) { error.value = '有効なPDFファイルが指定されていません。'; return; }
-
-  isLoading.value = true;
-  error.value = '';
-  originalBeforeImage.value = null;
-  originalAfterImage.value = null;
-  croppedPairs.value = [];
-
-  const formData = new FormData();
-  formData.append('file1', pdfFile1);
-  formData.append('file2', pdfFile2);
-  formData.append('threshold', '0'); formData.append('box_size', '0'); formData.append('dilation_iterations', '0');
-
-  try {
-    const response = await fetch('http://localhost:8000/api/diff', { method: 'POST', body: formData });
-    if (!response.ok) { 
-        const err = await response.json().catch(() => ({ detail: 'サーバーエラーが発生しました。' })); 
-        throw new Error(err.detail); 
-    }
-    const data = await response.json();
-    if (data.results && data.results.length > 0) {
-        const firstPageResult = data.results[0];
-        originalBeforeImage.value = firstPageResult.image_before;
-        originalAfterImage.value = firstPageResult.image_after;
-    } else {
-        throw new Error("サーバーから有効な比較結果が返されませんでした。");
-    }
-  } catch (e) {
-    error.value = e.message;
-  } finally {
-    isLoading.value = false;
   }
 };
 
@@ -431,16 +553,21 @@ const stopDrawing = async (event) => {
 };
 
 const cropAndAddPair = async ({ before: beforePoints, after: afterPoints }) => {
-    if (!canvasBefore.value) return;
-    const scale = nativeImageSize.value.width / canvasBefore.value.width;
-    const nativeBefore = beforePoints.map(p => ({ x: Math.round(p.x * scale), y: Math.round(p.y * scale) }));
-    const nativeAfter = afterPoints.map(p => ({ x: Math.round(p.x * scale), y: Math.round(p.y * scale) }));
+    if (!canvasBefore.value || !canvasAfter.value) return;
+
+    const scaleBefore = nativeBeforeImageSize.value.width / canvasBefore.value.width;
+    const nativeBefore = beforePoints.map(p => ({ x: Math.round(p.x * scaleBefore), y: Math.round(p.y * scaleBefore) }));
+
+    const scaleAfter = nativeAfterImageSize.value.width / canvasAfter.value.width;
+    const nativeAfter = afterPoints.map(p => ({ x: Math.round(p.x * scaleAfter), y: Math.round(p.y * scaleAfter) }));
 
     const formData = new FormData();
     const pdfFile1 = Array.isArray(file1.value) ? file1.value[0] : file1.value;
     const pdfFile2 = Array.isArray(file2.value) ? file2.value[0] : file2.value;
     formData.append('file1', pdfFile1);
     formData.append('file2', pdfFile2);
+    formData.append('page_num1', selectedPageBefore.value);
+    formData.append('page_num2', selectedPageAfter.value);
 
     let url;
     if (isSyncMode.value) {
@@ -453,6 +580,7 @@ const cropAndAddPair = async ({ before: beforePoints, after: afterPoints }) => {
     }
 
     isLoading.value = true;
+    loadingMessage.value = '部分領域を切り出し中です...';
     try {
         const response = await fetch(url, { method: 'POST', body: formData });
         if (!response.ok) { const err = await response.json(); throw new Error(err.detail); }
